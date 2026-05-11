@@ -134,6 +134,7 @@ Deno.serve(async (req: Request) => {
         status: 'pending',
         socially_order_id: sociallyReference,
         order_reference: sociallyReference,
+        // country_id column stores the service string for Server B (e.g. "tiktok")
       })
       .select()
       .single();

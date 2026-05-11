@@ -8,18 +8,22 @@ export interface Provider {
   provider_name: string;
 }
 
+/**
+ * For Server B, country_code is a SERVICE STRING (e.g. "tiktok", "whatsapp")
+ * not a numeric country code. The "title" is the display name (e.g. "TikTok - USA").
+ */
 export interface Country {
-  country_code: number;  // API field name
+  country_code: string;  // string for Server B (service code like "tiktok")
   title: string;
   code: string;
 }
 
 export interface Package {
-  country_code: number;
-  project_code: string;   // e.g. "tk", "tg"
-  project_name: string;   // e.g. "TikTok/Douyin"
-  price: number;          // raw price from API (Naira)
-  displayPrice: number;   // with 40% markup
+  country_code: string;
+  project_code: string;
+  project_name: string;
+  price: number;
+  displayPrice: number;
 }
 
 async function sociallyProxy(path: string, method = 'GET', body?: Record<string, unknown>) {
@@ -48,19 +52,32 @@ export async function getProviders(): Promise<Provider[]> {
   return data?.data || [];
 }
 
+/**
+ * For Server B: returns services as "countries", where country_code = service string
+ * e.g. { country_code: "tiktok", title: "TikTok - USA", code: "tiktok" }
+ */
 export async function getCountries(providerCode: string): Promise<Country[]> {
   const data = await sociallyProxy(`/sms/verification/provider/${providerCode}/countries`);
-  return data?.data || [];
+  const raw = data?.data || [];
+  // Normalise: ensure country_code is always a string
+  return raw.map((item: any) => ({
+    country_code: String(item.country_code),
+    title: item.title || item.name || String(item.country_code),
+    code: item.code || String(item.country_code),
+  }));
 }
 
-export async function getPackages(providerCode: string, countryCode: number): Promise<Package[]> {
+/**
+ * For Server B, pass the service string as country_id (that's what the packages endpoint expects)
+ */
+export async function getPackages(providerCode: string, countryCode: string): Promise<Package[]> {
   const data = await sociallyProxy('/sms/verification/service/provider/packages', 'POST', {
     provider_code: providerCode,
-    country_id: countryCode,  // packages endpoint still uses country_id as field name
+    country_id: countryCode,
   });
 
   const packages: Package[] = (data?.data || []).map((pkg: any) => ({
-    country_code: pkg.country_code,
+    country_code: String(pkg.country_code),
     project_code: pkg.project_code,
     project_name: pkg.project_name,
     price: pkg.price,
@@ -71,9 +88,8 @@ export async function getPackages(providerCode: string, countryCode: number): Pr
 }
 
 /**
- * Calls GET /request/sms/verification/{reference}/otp
- * This both triggers and retrieves the OTP.
- * OTP is embedded in the message: "Your OTP (0891) has been successfully received"
+ * GET /request/sms/verification/{reference}/otp
+ * OTP is embedded in the message string: "Your OTP (0891) has been successfully received"
  */
 export async function getOTP(reference: string): Promise<{ otp: string | null; mobile_number: string | null }> {
   try {

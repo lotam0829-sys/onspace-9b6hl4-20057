@@ -23,7 +23,7 @@ export default function CheckoutScreen() {
 
   const params = useLocalSearchParams<{
     provider_code: string;
-    country_code: string;
+    country_code: string;  // string for Server B (e.g. "tiktok")
     country_name: string;
     project_code: string;
     project_name: string;
@@ -61,7 +61,7 @@ export default function CheckoutScreen() {
     try {
       const data = await purchaseNumber({
         provider_code: params.provider_code,
-        country_code: parseInt(params.country_code),
+        country_code: params.country_code,  // string — pass as-is for Server B
         project_code: params.project_code,
         project_name: params.project_name,
         country_name: params.country_name,

@@ -41,7 +41,7 @@ export async function initializePayment(
 /** Purchase a number after Paystack payment has been confirmed. */
 export async function purchaseNumber(params: {
   provider_code: string;
-  country_code: number;
+  country_code: string;   // string for Server B (service code like "tiktok")
   project_code: string;
   project_name: string;
   country_name: string;
