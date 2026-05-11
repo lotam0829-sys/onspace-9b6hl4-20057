@@ -1,49 +1,54 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   StatusBar, TextInput, ActivityIndicator, Modal,
+  Animated, Dimensions, FlatList,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/template';
-import { getProviders, getCountries, getPackages, Provider, Country, Package } from '@/services/sociallyService';
-import { PLATFORM_DESCRIPTIONS, PLATFORM_ICONS } from '@/constants/config';
+import {
+  getProviders, getCountries, getPackages,
+  Provider, Country, Package,
+} from '@/services/sociallyService';
+import { PLATFORM_ICONS } from '@/constants/config';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const DEFAULT_PROVIDER = 'server-b';
-
-type Step = 'platform' | 'country';
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
 
-  const [step, setStep] = useState<Step>('platform');
-  const [providers, setProviders] = useState<Provider[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<Provider | null>(null);
   const [countries, setCountries] = useState<Country[]>([]);
   const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
   const [packages, setPackages] = useState<Package[]>([]);
-  const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
-  const [search, setSearch] = useState('');
-  const [loadingProviders, setLoadingProviders] = useState(false);
+  const [searchPlatform, setSearchPlatform] = useState('');
+  const [searchCountry, setSearchCountry] = useState('');
+
   const [loadingCountries, setLoadingCountries] = useState(false);
   const [loadingPackages, setLoadingPackages] = useState(false);
-  const [descModal, setDescModal] = useState<{ name: string; desc: string } | null>(null);
+
+  // Country picker modal
+  const [countryModalVisible, setCountryModalVisible] = useState(false);
+
+  // Platform confirm bottom sheet
+  const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
+  const sheetAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    loadProviders();
+    initProviders();
   }, []);
 
-  const loadProviders = async () => {
-    setLoadingProviders(true);
+  const initProviders = async () => {
     try {
       const data = await getProviders();
-      setProviders(data);
-      // Always prefer server-b; fall back to first provider
       const serverB = data.find((p) => p.provider_code === DEFAULT_PROVIDER) || data[0];
       if (serverB) {
         setSelectedProvider(serverB);
@@ -51,14 +56,11 @@ export default function HomeScreen() {
       }
     } catch (e) {
       console.error('Failed to load providers:', e);
-    } finally {
-      setLoadingProviders(false);
     }
   };
 
   const loadCountries = async (providerCode: string) => {
     setLoadingCountries(true);
-    setCountries([]);
     try {
       const data = await getCountries(providerCode);
       setCountries(data);
@@ -69,12 +71,12 @@ export default function HomeScreen() {
     }
   };
 
-  const loadPackages = async (countryCode: number) => {
+  const loadPackages = async (country: Country) => {
     if (!selectedProvider) return;
     setLoadingPackages(true);
     setPackages([]);
     try {
-      const data = await getPackages(selectedProvider.provider_code, countryCode);
+      const data = await getPackages(selectedProvider.provider_code, country.country_code);
       setPackages(data);
     } catch (e) {
       console.error('Failed to load packages:', e);
@@ -86,369 +88,444 @@ export default function HomeScreen() {
   const handleCountrySelect = async (country: Country) => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedCountry(country);
-    setSearch('');
-    setStep('platform');
-    loadPackages(country.country_code);
+    setCountryModalVisible(false);
+    setSearchCountry('');
+    setPackages([]);
+    loadPackages(country);
   };
 
-  const handlePackageSelect = async (pkg: Package) => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const desc =
-      PLATFORM_DESCRIPTIONS[pkg.project_name] ||
-      `Get a real temporary number from your chosen country to complete verification on ${pkg.project_name}. The OTP will be delivered to you automatically.`;
+  const handlePackageTap = async (pkg: Package) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSelectedPackage(pkg);
-    setDescModal({ name: pkg.project_name, desc });
+    Animated.spring(sheetAnim, { toValue: 1, useNativeDriver: true, tension: 65, friction: 11 }).start();
+  };
+
+  const closeSheet = () => {
+    Animated.timing(sheetAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(() =>
+      setSelectedPackage(null)
+    );
   };
 
   const proceedToCheckout = async () => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setDescModal(null);
     if (!selectedPackage || !selectedCountry || !selectedProvider) return;
-    router.push({
-      pathname: '/checkout',
-      params: {
-        provider_code: selectedProvider.provider_code,
-        country_code: String(selectedCountry.country_code),
-        country_name: selectedCountry.title,
-        project_code: selectedPackage.project_code,
-        project_name: selectedPackage.project_name,
-        price: String(selectedPackage.displayPrice),
-      },
-    });
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    closeSheet();
+    setTimeout(() => {
+      router.push({
+        pathname: '/checkout',
+        params: {
+          provider_code: selectedProvider.provider_code,
+          country_code: String(selectedCountry.country_code),
+          country_name: selectedCountry.title,
+          project_code: selectedPackage.project_code,
+          project_name: selectedPackage.project_name,
+          price: String(selectedPackage.displayPrice),
+        },
+      });
+    }, 250);
   };
 
   const filteredCountries = countries.filter((c) =>
-    c.title.toLowerCase().includes(search.toLowerCase())
+    c.title.toLowerCase().includes(searchCountry.toLowerCase())
   );
 
   const filteredPackages = packages.filter((p) =>
-    p.project_name.toLowerCase().includes(search.toLowerCase())
+    p.project_name.toLowerCase().includes(searchPlatform.toLowerCase())
   );
+
+  const sheetTranslateY = sheetAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [400, 0],
+  });
+
+  const firstName = user?.username?.split(' ')[0] || user?.email?.split('@')[0] || 'there';
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
 
-      {/* Header */}
+      {/* ── Header ── */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.appName}>NumVault</Text>
-          <Text style={styles.headerSub}>SMS Verification Numbers</Text>
+          <Text style={styles.greeting}>Hey, {firstName} 👋</Text>
+          <Text style={styles.appTagline}>Get a number, get verified.</Text>
         </View>
-        <View style={styles.providerBadge}>
-          <MaterialIcons name="dns" size={13} color={Colors.primary} />
-          <Text style={styles.providerText}>{selectedProvider?.provider_name || 'SERVER B'}</Text>
+        <View style={styles.providerPill}>
+          <View style={styles.providerDot} />
+          <Text style={styles.providerPillText}>SERVER B</Text>
         </View>
       </View>
 
-      {/* Trust badges */}
-      <View style={styles.trustRow}>
-        {[
-          { icon: 'bolt', label: 'Instant Delivery' },
-          { icon: 'lock', label: 'Secure Payment' },
-          { icon: 'public', label: '200+ Countries' },
-        ].map((b) => (
-          <View key={b.label} style={styles.trustBadge}>
-            <MaterialIcons name={b.icon as any} size={12} color={Colors.primary} />
-            <Text style={styles.trustText}>{b.label}</Text>
-          </View>
-        ))}
-      </View>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
 
-      <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-        {/* Step indicator */}
-        <View style={styles.stepIndicator}>
-          <StepDot num={1} label="Platform" active={step === 'platform'} done={!!selectedPackage && step !== 'platform'} />
-          <View style={styles.stepLine} />
-          <StepDot num={2} label="Country" active={step === 'country'} done={!!selectedCountry} />
-        </View>
-
-        {/* Section header */}
+        {/* ── Country Selector Card ── */}
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>
-              {step === 'country' ? 'Choose Country' : 'Choose Platform'}
-            </Text>
-            <TouchableOpacity
-              onPress={async () => {
-                await Haptics.selectionAsync();
-                setStep(step === 'country' ? 'platform' : 'country');
-                setSearch('');
-              }}
-              style={styles.switchBtn}
-            >
-              <Text style={styles.switchBtnText}>
-                {step === 'country' ? 'Pick Platform' : 'Change Country'}
-              </Text>
-            </TouchableOpacity>
+          <Text style={styles.sectionLabel}>STEP 1 — SELECT COUNTRY</Text>
+          <TouchableOpacity
+            style={styles.countryCard}
+            onPress={async () => {
+              await Haptics.selectionAsync();
+              setCountryModalVisible(true);
+            }}
+            activeOpacity={0.8}
+          >
+            {selectedCountry ? (
+              <>
+                <View style={styles.countryCardLeft}>
+                  <View style={styles.countryFlagCircle}>
+                    <Text style={styles.countryFlagEmoji}>🌍</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.countryCardName}>{selectedCountry.title}</Text>
+                    <Text style={styles.countryCardSub}>
+                      {packages.length > 0
+                        ? `${packages.length} platforms available`
+                        : loadingPackages
+                        ? 'Loading platforms...'
+                        : 'Tap to change'}
+                    </Text>
+                  </View>
+                </View>
+                <MaterialIcons name="edit" size={18} color={Colors.primary} />
+              </>
+            ) : (
+              <>
+                <View style={styles.countryCardLeft}>
+                  <View style={[styles.countryFlagCircle, styles.countryFlagEmpty]}>
+                    <MaterialIcons name="public" size={22} color={Colors.textMuted} />
+                  </View>
+                  <View>
+                    <Text style={styles.countryCardPlaceholder}>Choose a country</Text>
+                    <Text style={styles.countryCardSub}>200+ countries available</Text>
+                  </View>
+                </View>
+                <MaterialIcons name="chevron-right" size={20} color={Colors.textMuted} />
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* ── Platform Grid ── */}
+        <View style={styles.section}>
+          <View style={styles.platformsHeader}>
+            <Text style={styles.sectionLabel}>STEP 2 — CHOOSE PLATFORM</Text>
+            {selectedCountry && !loadingPackages && packages.length > 0 && (
+              <Text style={styles.platformCount}>{packages.length} available</Text>
+            )}
           </View>
 
-          {selectedCountry && step === 'platform' && (
+          {!selectedCountry ? (
+            <View style={styles.emptyState}>
+              <View style={styles.emptyIconRing}>
+                <MaterialIcons name="touch-app" size={32} color={Colors.textMuted} />
+              </View>
+              <Text style={styles.emptyTitle}>Select a country first</Text>
+              <Text style={styles.emptyBody}>
+                Pick a country above to see all available platforms and their prices.
+              </Text>
+              <TouchableOpacity
+                style={styles.emptyBtn}
+                onPress={async () => {
+                  await Haptics.selectionAsync();
+                  setCountryModalVisible(true);
+                }}
+                activeOpacity={0.85}
+              >
+                <MaterialIcons name="public" size={16} color={Colors.black} />
+                <Text style={styles.emptyBtnText}>Pick a Country</Text>
+              </TouchableOpacity>
+            </View>
+          ) : loadingPackages ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator color={Colors.primary} size="large" />
+              <Text style={styles.loadingText}>Finding available platforms...</Text>
+            </View>
+          ) : filteredPackages.length === 0 && searchPlatform.length > 0 ? (
+            <Text style={styles.noResultText}>No platform found for "{searchPlatform}"</Text>
+          ) : packages.length === 0 ? (
+            <View style={styles.emptyState}>
+              <MaterialIcons name="info-outline" size={32} color={Colors.textMuted} />
+              <Text style={styles.emptyTitle}>No platforms available</Text>
+              <Text style={styles.emptyBody}>Try selecting a different country.</Text>
+            </View>
+          ) : (
+            <>
+              {/* Search platforms */}
+              <View style={styles.searchBar}>
+                <MaterialIcons name="search" size={16} color={Colors.textMuted} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={searchPlatform}
+                  onChangeText={setSearchPlatform}
+                  placeholder="Search TikTok, PayPal..."
+                  placeholderTextColor={Colors.textMuted}
+                />
+                {searchPlatform.length > 0 && (
+                  <TouchableOpacity onPress={() => setSearchPlatform('')}>
+                    <MaterialIcons name="close" size={14} color={Colors.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              <View style={styles.packageGrid}>
+                {filteredPackages.map((pkg) => (
+                  <PackageCard key={pkg.project_code} pkg={pkg} onPress={() => handlePackageTap(pkg)} />
+                ))}
+              </View>
+            </>
+          )}
+        </View>
+      </ScrollView>
+
+      {/* ══════════════════════════════════════
+          Country Picker Modal
+      ══════════════════════════════════════ */}
+      <Modal
+        visible={countryModalVisible}
+        animationType="slide"
+        onRequestClose={() => { setCountryModalVisible(false); setSearchCountry(''); }}
+      >
+        <View style={[styles.countryModal, { paddingTop: insets.top }]}>
+          {/* Modal header */}
+          <View style={styles.countryModalHeader}>
             <TouchableOpacity
-              style={styles.selectedCountry}
-              onPress={() => { setStep('country'); setSearch(''); }}
-              activeOpacity={0.8}
+              onPress={() => { setCountryModalVisible(false); setSearchCountry(''); }}
+              style={styles.modalCloseBtn}
             >
-              <Text style={styles.flagEmoji}>🌍</Text>
-              <Text style={styles.selectedCountryText}>{selectedCountry.title}</Text>
-              <MaterialIcons name="edit" size={14} color={Colors.textSecondary} />
+              <MaterialIcons name="close" size={20} color={Colors.text} />
             </TouchableOpacity>
-          )}
-        </View>
+            <Text style={styles.countryModalTitle}>Select Country</Text>
+            <View style={{ width: 36 }} />
+          </View>
 
-        {/* Search bar */}
-        <View style={styles.searchBar}>
-          <MaterialIcons name="search" size={18} color={Colors.textMuted} />
-          <TextInput
-            style={styles.searchInput}
-            value={search}
-            onChangeText={setSearch}
-            placeholder={step === 'country' ? 'Search countries...' : 'Search platforms...'}
-            placeholderTextColor={Colors.textMuted}
-          />
-          {search.length > 0 && (
-            <TouchableOpacity onPress={() => setSearch('')}>
-              <MaterialIcons name="close" size={16} color={Colors.textMuted} />
-            </TouchableOpacity>
-          )}
-        </View>
+          {/* Search */}
+          <View style={styles.countrySearchBar}>
+            <MaterialIcons name="search" size={18} color={Colors.textMuted} />
+            <TextInput
+              style={styles.countrySearchInput}
+              value={searchCountry}
+              onChangeText={setSearchCountry}
+              placeholder="Search countries..."
+              placeholderTextColor={Colors.textMuted}
+              autoFocus
+            />
+            {searchCountry.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchCountry('')}>
+                <MaterialIcons name="close" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
 
-        {/* Country list */}
-        {step === 'country' && (
-          <View style={styles.listContainer}>
-            {loadingCountries ? (
-              <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.xl }} />
-            ) : filteredCountries.length === 0 ? (
-              <Text style={styles.emptyText}>No countries found</Text>
-            ) : (
-              filteredCountries.map((country) => (
+          {/* Country list */}
+          {loadingCountries ? (
+            <ActivityIndicator color={Colors.primary} style={{ marginTop: 40 }} />
+          ) : (
+            <FlatList
+              data={filteredCountries}
+              keyExtractor={(item) => String(item.country_code)}
+              contentContainerStyle={{ paddingHorizontal: Spacing.lg, paddingBottom: insets.bottom + 24 }}
+              showsVerticalScrollIndicator={false}
+              ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: Colors.surfaceBorder }} />}
+              renderItem={({ item }) => (
                 <TouchableOpacity
-                  key={country.country_code}
-                  style={[
-                    styles.listItem,
-                    selectedCountry?.country_code === country.country_code && styles.listItemSelected,
-                  ]}
-                  onPress={() => handleCountrySelect(country)}
-                  activeOpacity={0.75}
+                  style={styles.countryRow}
+                  onPress={() => handleCountrySelect(item)}
+                  activeOpacity={0.7}
                 >
-                  <Text style={styles.countryFlag}>🌍</Text>
-                  <Text style={styles.listItemText}>{country.title}</Text>
-                  {selectedCountry?.country_code === country.country_code && (
+                  <Text style={styles.countryRowFlag}>🌍</Text>
+                  <Text style={styles.countryRowName}>{item.title}</Text>
+                  {selectedCountry?.country_code === item.country_code && (
                     <MaterialIcons name="check-circle" size={18} color={Colors.primary} />
                   )}
                 </TouchableOpacity>
-              ))
-            )}
-          </View>
-        )}
-
-        {/* Platform / Package list */}
-        {step === 'platform' && (
-          <View style={styles.listContainer}>
-            {loadingPackages ? (
-              <View style={styles.loadingBox}>
-                <ActivityIndicator color={Colors.primary} />
-                <Text style={styles.loadingText}>
-                  {selectedCountry ? 'Loading available platforms...' : 'Select a country to see platforms'}
-                </Text>
-              </View>
-            ) : !selectedCountry ? (
-              <View style={styles.noCountry}>
-                <MaterialIcons name="public" size={48} color={Colors.textMuted} />
-                <Text style={styles.noCountryTitle}>Choose a Country First</Text>
-                <Text style={styles.noCountryText}>
-                  Tap "Change Country" to select which country you need a number from
-                </Text>
-                <TouchableOpacity
-                  style={styles.noCountryBtn}
-                  onPress={() => setStep('country')}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.noCountryBtnText}>Choose Country</Text>
-                </TouchableOpacity>
-              </View>
-            ) : filteredPackages.length === 0 ? (
-              <Text style={styles.emptyText}>No platforms found</Text>
-            ) : (
-              <View style={styles.packageGrid}>
-                {filteredPackages.map((pkg) => (
-                  <TouchableOpacity
-                    key={pkg.project_code}
-                    style={styles.packageCard}
-                    onPress={() => handlePackageSelect(pkg)}
-                    activeOpacity={0.75}
-                  >
-                    <MaterialIcons
-                      name={(PLATFORM_ICONS[pkg.project_name] || 'phone-android') as any}
-                      size={24}
-                      color={Colors.primary}
-                    />
-                    <Text style={styles.packageName} numberOfLines={2}>{pkg.project_name}</Text>
-                    <Text style={styles.packagePrice}>₦{pkg.displayPrice.toLocaleString()}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
-
-        <View style={{ height: 100 }} />
-      </ScrollView>
-
-      {/* Platform Description Modal */}
-      <Modal
-        visible={!!descModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setDescModal(null)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHandle} />
-            <MaterialIcons
-              name={(PLATFORM_ICONS[descModal?.name || ''] || 'phone-android') as any}
-              size={40}
-              color={Colors.primary}
-              style={{ marginBottom: Spacing.md }}
+              )}
             />
-            <Text style={styles.modalTitle}>{descModal?.name}</Text>
-            <Text style={styles.modalDesc}>{descModal?.desc}</Text>
-
-            <View style={styles.modalMeta}>
-              <View style={styles.modalMetaItem}>
-                <Text style={styles.modalMetaLabel}>Country</Text>
-                <Text style={styles.modalMetaValue}>{selectedCountry?.title}</Text>
-              </View>
-              <View style={styles.modalMetaDivider} />
-              <View style={styles.modalMetaItem}>
-                <Text style={styles.modalMetaLabel}>Price</Text>
-                <Text style={[styles.modalMetaValue, { color: Colors.primary }]}>
-                  ₦{selectedPackage?.displayPrice.toLocaleString()}
-                </Text>
-              </View>
-            </View>
-
-            <TouchableOpacity style={styles.modalCta} onPress={proceedToCheckout} activeOpacity={0.85}>
-              <MaterialIcons name="shopping-cart" size={18} color={Colors.black} />
-              <Text style={styles.modalCtaText}>Get My Number</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setDescModal(null)}>
-              <Text style={styles.modalCancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
+          )}
         </View>
       </Modal>
+
+      {/* ══════════════════════════════════════
+          Platform Confirm Bottom Sheet
+      ══════════════════════════════════════ */}
+      {selectedPackage && (
+        <TouchableOpacity
+          style={styles.sheetBackdrop}
+          activeOpacity={1}
+          onPress={closeSheet}
+        />
+      )}
+      {selectedPackage && (
+        <Animated.View
+          style={[
+            styles.confirmSheet,
+            { paddingBottom: insets.bottom + 24, transform: [{ translateY: sheetTranslateY }] },
+          ]}
+        >
+          <View style={styles.sheetHandle} />
+
+          {/* Platform icon + name */}
+          <View style={styles.sheetPlatformRow}>
+            <View style={styles.sheetPlatformIcon}>
+              <MaterialIcons
+                name={(PLATFORM_ICONS[selectedPackage.project_name] || 'phone-android') as any}
+                size={30}
+                color={Colors.primary}
+              />
+            </View>
+            <View style={styles.sheetPlatformInfo}>
+              <Text style={styles.sheetPlatformName}>{selectedPackage.project_name}</Text>
+              <Text style={styles.sheetPlatformSub}>
+                {selectedCountry?.title} · SMS Verification
+              </Text>
+            </View>
+          </View>
+
+          {/* Order details */}
+          <View style={styles.sheetDetails}>
+            <View style={styles.sheetDetailRow}>
+              <Text style={styles.sheetDetailLabel}>You receive</Text>
+              <Text style={styles.sheetDetailValue}>Real temporary phone number</Text>
+            </View>
+            <View style={styles.sheetDetailRow}>
+              <Text style={styles.sheetDetailLabel}>OTP delivery</Text>
+              <Text style={styles.sheetDetailValue}>Auto-captured · shown instantly</Text>
+            </View>
+            <View style={styles.sheetDetailRow}>
+              <Text style={styles.sheetDetailLabel}>Refund if no OTP</Text>
+              <Text style={[styles.sheetDetailValue, { color: Colors.primary }]}>Automatic within 5 mins</Text>
+            </View>
+            <View style={[styles.sheetDetailRow, styles.sheetPriceRow]}>
+              <Text style={styles.sheetPriceLabel}>Total</Text>
+              <Text style={styles.sheetPrice}>₦{selectedPackage.displayPrice.toLocaleString()}</Text>
+            </View>
+          </View>
+
+          {/* Payment CTA */}
+          <TouchableOpacity style={styles.sheetPayBtn} onPress={proceedToCheckout} activeOpacity={0.88}>
+            <MaterialIcons name="lock" size={16} color={Colors.black} />
+            <Text style={styles.sheetPayBtnText}>Pay ₦{selectedPackage.displayPrice.toLocaleString()}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.sheetCancelBtn} onPress={closeSheet}>
+            <Text style={styles.sheetCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
     </View>
   );
 }
 
-function StepDot({ num, label, active, done }: { num: number; label: string; active: boolean; done: boolean }) {
+function PackageCard({ pkg, onPress }: { pkg: Package; onPress: () => void }) {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  const onPressIn = () =>
+    Animated.spring(scaleAnim, { toValue: 0.96, useNativeDriver: true, speed: 30 }).start();
+  const onPressOut = () =>
+    Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 30 }).start();
+
   return (
-    <View style={stepStyles.container}>
-      <View style={[stepStyles.dot, active && stepStyles.dotActive, done && stepStyles.dotDone]}>
-        {done ? (
-          <MaterialIcons name="check" size={12} color={Colors.black} />
-        ) : (
-          <Text style={stepStyles.num}>{num}</Text>
-        )}
-      </View>
-      <Text style={[stepStyles.label, active && stepStyles.labelActive]}>{label}</Text>
-    </View>
+    <Animated.View style={{ transform: [{ scale: scaleAnim }], width: '47%' }}>
+      <TouchableOpacity
+        style={styles.packageCard}
+        onPress={onPress}
+        onPressIn={onPressIn}
+        onPressOut={onPressOut}
+        activeOpacity={1}
+      >
+        <View style={styles.packageIconWrap}>
+          <MaterialIcons
+            name={(PLATFORM_ICONS[pkg.project_name] || 'phone-android') as any}
+            size={22}
+            color={Colors.primary}
+          />
+        </View>
+        <Text style={styles.packageName} numberOfLines={2}>{pkg.project_name}</Text>
+        <View style={styles.packagePriceRow}>
+          <Text style={styles.packagePrice}>₦{pkg.displayPrice.toLocaleString()}</Text>
+          <MaterialIcons name="arrow-forward" size={13} color={Colors.primary} />
+        </View>
+      </TouchableOpacity>
+    </Animated.View>
   );
 }
-
-const stepStyles = StyleSheet.create({
-  container: { alignItems: 'center', gap: 4 },
-  dot: {
-    width: 28, height: 28, borderRadius: 14,
-    backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.surfaceBorder,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  dotActive: { backgroundColor: Colors.primaryMuted, borderColor: Colors.primary },
-  dotDone: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  num: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
-  label: { color: Colors.textMuted, fontSize: FontSize.xs },
-  labelActive: { color: Colors.primary },
-});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+
+  // Header
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.md,
   },
-  appName: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold, letterSpacing: 0.5 },
-  headerSub: { color: Colors.textSecondary, fontSize: FontSize.xs },
-  providerBadge: {
+  greeting: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  appTagline: { color: Colors.textSecondary, fontSize: FontSize.xs, marginTop: 2 },
+  providerPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    backgroundColor: Colors.primaryMuted,
+    gap: 6,
+    backgroundColor: Colors.surface,
     borderWidth: 1,
-    borderColor: Colors.primary,
+    borderColor: Colors.surfaceBorder,
     borderRadius: Radius.full,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
-  providerText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
-  trustRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.md,
+  providerDot: {
+    width: 7, height: 7, borderRadius: 4,
+    backgroundColor: Colors.primary,
   },
-  trustBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.full,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
+  providerPillText: { color: Colors.textSecondary, fontSize: 11, fontWeight: FontWeight.semibold },
+
+  // Section
+  section: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.lg },
+  sectionLabel: {
+    color: Colors.textMuted,
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.2,
+    marginBottom: Spacing.sm,
   },
-  trustText: { color: Colors.textSecondary, fontSize: 10 },
-  stepIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.xl,
-    marginBottom: Spacing.md,
-  },
-  stepLine: { flex: 1, height: 1, backgroundColor: Colors.surfaceBorder, marginHorizontal: Spacing.md },
-  section: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.sm },
-  sectionHeader: {
+  platformsHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: Spacing.sm,
   },
-  sectionTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  switchBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-  },
-  switchBtnText: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
-  selectedCountry: {
+  platformCount: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+
+  // Country selector card
+  countryCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    justifyContent: 'space-between',
     backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.md,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderRadius: Radius.lg,
     padding: Spacing.md,
+    shadowColor: Colors.primary,
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
   },
-  flagEmoji: { fontSize: 20 },
-  selectedCountryText: { flex: 1, color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.medium },
+  countryCardLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flex: 1 },
+  countryFlagCircle: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: Colors.primaryMuted,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  countryFlagEmpty: { backgroundColor: Colors.surfaceElevated },
+  countryFlagEmoji: { fontSize: 22 },
+  countryCardName: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  countryCardPlaceholder: { color: Colors.textSecondary, fontSize: FontSize.md, fontWeight: FontWeight.medium },
+  countryCardSub: { color: Colors.textSecondary, fontSize: FontSize.xs, marginTop: 2 },
+
+  // Platform search
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -456,104 +533,189 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
     borderRadius: Radius.md,
-    marginHorizontal: Spacing.lg,
     paddingHorizontal: Spacing.md,
-    height: 44,
+    height: 40,
     gap: Spacing.sm,
     marginBottom: Spacing.md,
   },
-  searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.md, includeFontPadding: false },
-  listContainer: { paddingHorizontal: Spacing.lg },
-  listItem: {
+  searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.sm, includeFontPadding: false },
+
+  // Package grid
+  packageGrid: {
     flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
     gap: Spacing.md,
+  },
+  packageCard: {
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
     borderRadius: Radius.md,
     padding: Spacing.md,
-    marginBottom: Spacing.sm,
+    gap: Spacing.sm,
   },
-  listItemSelected: { borderColor: Colors.primary, backgroundColor: Colors.primaryMuted },
-  countryFlag: { fontSize: 18 },
-  listItemText: { flex: 1, color: Colors.text, fontSize: FontSize.md },
-  loadingBox: { alignItems: 'center', paddingVertical: Spacing.xl, gap: Spacing.md },
-  loadingText: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center' },
-  noCountry: { alignItems: 'center', paddingVertical: Spacing.xl, gap: Spacing.md },
-  noCountryTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  noCountryText: {
-    color: Colors.textSecondary,
-    fontSize: FontSize.sm,
-    textAlign: 'center',
-    lineHeight: 22,
+  packageIconWrap: {
+    width: 40, height: 40,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.primaryMuted,
+    alignItems: 'center', justifyContent: 'center',
   },
-  noCountryBtn: {
+  packageName: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.semibold, lineHeight: 18 },
+  packagePriceRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  packagePrice: { color: Colors.primary, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+
+  // Empty / loading states
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: Spacing.xxl,
+    gap: Spacing.md,
+  },
+  emptyIconRing: {
+    width: 72, height: 72, borderRadius: 36,
+    backgroundColor: Colors.surface,
+    borderWidth: 1, borderColor: Colors.surfaceBorder,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  emptyTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
+  emptyBody: {
+    color: Colors.textSecondary, fontSize: FontSize.sm,
+    textAlign: 'center', lineHeight: 22, paddingHorizontal: Spacing.xl,
+  },
+  emptyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
     backgroundColor: Colors.primary,
     borderRadius: Radius.md,
     paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
+    paddingVertical: 12,
     marginTop: Spacing.sm,
   },
-  noCountryBtnText: { color: Colors.black, fontWeight: FontWeight.bold, fontSize: FontSize.md },
-  emptyText: { color: Colors.textSecondary, textAlign: 'center', paddingVertical: Spacing.xl, fontSize: FontSize.sm },
-  packageGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
-  packageCard: {
-    width: '47%',
+  emptyBtnText: { color: Colors.black, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
+  loadingBox: { alignItems: 'center', paddingVertical: Spacing.xxl, gap: Spacing.md },
+  loadingText: { color: Colors.textSecondary, fontSize: FontSize.sm },
+  noResultText: { color: Colors.textSecondary, textAlign: 'center', paddingVertical: Spacing.xl, fontSize: FontSize.sm },
+
+  // Country picker modal
+  countryModal: { flex: 1, backgroundColor: Colors.background },
+  countryModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+  },
+  modalCloseBtn: {
+    width: 36, height: 36, borderRadius: Radius.md,
+    backgroundColor: Colors.surface,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  countryModalTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
+  countrySearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
     borderRadius: Radius.md,
-    padding: Spacing.md,
-    alignItems: 'flex-start',
+    marginHorizontal: Spacing.lg,
+    marginVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    height: 46,
     gap: Spacing.sm,
   },
-  packageName: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.semibold, lineHeight: 18 },
-  packagePrice: { color: Colors.primary, fontSize: FontSize.md, fontWeight: FontWeight.bold },
-  modalOverlay: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
-  modalCard: {
+  countrySearchInput: { flex: 1, color: Colors.text, fontSize: FontSize.md, includeFontPadding: false },
+  countryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    gap: Spacing.md,
+  },
+  countryRowFlag: { fontSize: 20 },
+  countryRowName: { flex: 1, color: Colors.text, fontSize: FontSize.md },
+
+  // Bottom sheet backdrop
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: Colors.overlay,
+  },
+
+  // Confirm bottom sheet
+  confirmSheet: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     backgroundColor: Colors.surface,
     borderTopLeftRadius: Radius.xl,
     borderTopRightRadius: Radius.xl,
-    padding: Spacing.xl,
-    paddingBottom: 40,
+    borderTopWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    padding: Spacing.lg,
+    paddingTop: Spacing.md,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 12,
+  },
+  sheetHandle: {
+    width: 40, height: 4, borderRadius: 2,
+    backgroundColor: Colors.surfaceBorder,
+    alignSelf: 'center',
+    marginBottom: Spacing.lg,
+  },
+  sheetPlatformRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: Spacing.md,
+    marginBottom: Spacing.lg,
+  },
+  sheetPlatformIcon: {
+    width: 56, height: 56, borderRadius: Radius.md,
+    backgroundColor: Colors.primaryMuted,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: Colors.primary,
+  },
+  sheetPlatformInfo: { flex: 1 },
+  sheetPlatformName: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold },
+  sheetPlatformSub: { color: Colors.textSecondary, fontSize: FontSize.sm, marginTop: 3 },
+
+  sheetDetails: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.lg,
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
   },
-  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.surfaceBorder, marginBottom: Spacing.lg },
-  modalTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold, marginBottom: Spacing.sm },
-  modalDesc: {
-    color: Colors.textSecondary,
-    fontSize: FontSize.sm,
-    lineHeight: 22,
-    textAlign: 'center',
-    marginBottom: Spacing.lg,
-  },
-  modalMeta: {
+  sheetDetailRow: {
     flexDirection: 'row',
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    width: '100%',
-    marginBottom: Spacing.lg,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
   },
-  modalMetaItem: { flex: 1, alignItems: 'center', gap: 4 },
-  modalMetaDivider: { width: 1, backgroundColor: Colors.surfaceBorder },
-  modalMetaLabel: { color: Colors.textSecondary, fontSize: FontSize.xs },
-  modalMetaValue: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  modalCta: {
+  sheetPriceRow: { borderBottomWidth: 0 },
+  sheetDetailLabel: { color: Colors.textSecondary, fontSize: FontSize.sm },
+  sheetDetailValue: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.medium, flex: 1, textAlign: 'right' },
+  sheetPriceLabel: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
+  sheetPrice: { color: Colors.primary, fontSize: FontSize.xxl, fontWeight: FontWeight.bold },
+
+  sheetPayBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: Spacing.sm,
     backgroundColor: Colors.primary,
     borderRadius: Radius.md,
-    height: 52,
-    justifyContent: 'center',
-    width: '100%',
+    height: 54,
     marginBottom: Spacing.sm,
   },
-  modalCtaText: { color: Colors.black, fontSize: FontSize.md, fontWeight: FontWeight.bold },
-  modalCancel: { paddingVertical: Spacing.md },
-  modalCancelText: { color: Colors.textSecondary, fontSize: FontSize.sm },
+  sheetPayBtnText: { color: Colors.black, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  sheetCancelBtn: { alignItems: 'center', paddingVertical: Spacing.sm },
+  sheetCancelText: { color: Colors.textSecondary, fontSize: FontSize.sm },
 });

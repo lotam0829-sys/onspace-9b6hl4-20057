@@ -12,6 +12,7 @@ import { useAuth, useAlert } from '@/template';
 import { useOrders } from '@/hooks/useOrders';
 import { initializePayment, purchaseNumber } from '@/services/paystackService';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { PLATFORM_ICONS } from '@/constants/config';
 
 export default function CheckoutScreen() {
   const insets = useSafeAreaInsets();
@@ -33,35 +34,29 @@ export default function CheckoutScreen() {
   const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
   const [paystackRef, setPaystackRef] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState<{ message: string; hint?: string } | null>(null);
+  const [purchaseStage, setPurchaseStage] = useState<'idle' | 'paying' | 'purchasing'>('idle');
 
   const price = parseFloat(params.price || '0');
 
   const parsePurchaseError = (rawMessage: string): { message: string; hint?: string } => {
     const msg = rawMessage.replace(/^Socially:\s*/i, '').trim();
     const lower = msg.toLowerCase();
-    if (lower.includes('insufficient') || lower.includes('balance') || lower.includes('fund')) {
-      return { message: msg, hint: 'Provider account balance is low. Please try again shortly or contact support.' };
-    }
-    if (lower.includes('not found') || lower.includes('route') || lower.includes('404')) {
-      return { message: msg, hint: 'This provider or country is currently unavailable. Try a different country.' };
-    }
-    if (lower.includes('unavailable') || lower.includes('no number') || lower.includes('out of stock') || lower.includes('stock')) {
-      return { message: msg, hint: 'No numbers are available for this country right now. Try a different country.' };
-    }
-    if (lower.includes('unauthorized') || lower.includes('invalid token') || lower.includes('403') || lower.includes('401')) {
-      return { message: msg, hint: 'API authentication issue. Please contact support.' };
-    }
-    if (lower.includes('project') || lower.includes('platform') || lower.includes('service')) {
-      return { message: msg, hint: 'This platform may not be available on the selected provider/country combination.' };
-    }
-    if (lower.includes('payment') || lower.includes('verify')) {
-      return { message: msg, hint: 'Payment could not be verified. Please contact support with your reference.' };
-    }
+    if (lower.includes('insufficient') || lower.includes('balance') || lower.includes('fund'))
+      return { message: msg, hint: 'Provider balance is low. Try again in a few minutes.' };
+    if (lower.includes('unavailable') || lower.includes('no number') || lower.includes('stock'))
+      return { message: msg, hint: 'No numbers available for this country right now.' };
+    if (lower.includes('not found') || lower.includes('route') || lower.includes('404'))
+      return { message: msg, hint: 'Try a different country or platform.' };
+    if (lower.includes('unauthorized') || lower.includes('invalid token'))
+      return { message: msg, hint: 'Authentication issue. Contact support.' };
+    if (lower.includes('payment') || lower.includes('verify'))
+      return { message: msg, hint: 'Payment could not be verified. Contact support with your reference.' };
     return { message: msg };
   };
 
   const executePurchase = async (reference: string) => {
     setPurchaseError(null);
+    setPurchaseStage('purchasing');
     setLoading(true);
     try {
       const data = await purchaseNumber({
@@ -79,23 +74,21 @@ export default function CheckoutScreen() {
 
       const orderId = data?.data?.order?.id;
       if (orderId) {
-        router.replace({
-          pathname: '/number-display',
-          params: { order_id: orderId },
-        });
+        router.replace({ pathname: '/number-display', params: { order_id: orderId } });
       }
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      const parsed = parsePurchaseError(e.message || 'Purchase failed. Please try again.');
-      setPurchaseError(parsed);
+      setPurchaseError(parsePurchaseError(e.message || 'Purchase failed. Please try again.'));
     } finally {
       setLoading(false);
+      setPurchaseStage('idle');
     }
   };
 
   const handlePay = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setPurchaseError(null);
+    setPurchaseStage('paying');
     setLoading(true);
     try {
       const data = await initializePayment(user?.email || '', price, 'number_purchase');
@@ -108,22 +101,26 @@ export default function CheckoutScreen() {
       setPurchaseError({ message: e.message || 'Payment initialization failed. Please try again.' });
     } finally {
       setLoading(false);
+      setPurchaseStage('idle');
     }
   };
 
   const handleWebViewNav = async (url: string) => {
     if (url.includes('numvault.app/payment/callback') || url.includes('paystack.com/close')) {
       setWebViewUrl(null);
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
       if (paystackRef) {
-        // Small delay to let Paystack finalize the transaction
         setTimeout(() => executePurchase(paystackRef), 1500);
       } else {
-        setPurchaseError({ message: 'Payment reference lost. Please contact support.' });
+        setPurchaseError({ message: 'Payment reference lost. Contact support.' });
       }
     }
   };
+
+  const stageLabel = purchaseStage === 'paying'
+    ? 'Opening payment...'
+    : purchaseStage === 'purchasing'
+    ? 'Securing your number...'
+    : null;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -140,161 +137,148 @@ export default function CheckoutScreen() {
         >
           <MaterialIcons name="arrow-back" size={22} color={Colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Checkout</Text>
+        <Text style={styles.headerTitle}>Order Summary</Text>
         <View style={{ width: 36 }} />
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={styles.content}>
-        {/* Order Summary */}
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryTitle}>Order Summary</Text>
-          <View style={styles.summaryRow}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 120 }]}
+      >
+        {/* ── Order card ── */}
+        <View style={styles.orderCard}>
+          {/* Platform row */}
+          <View style={styles.platformRow}>
             <View style={styles.platformIcon}>
-              <MaterialIcons name="phone-android" size={24} color={Colors.primary} />
+              <MaterialIcons
+                name={(PLATFORM_ICONS[params.project_name] || 'phone-android') as any}
+                size={28}
+                color={Colors.primary}
+              />
             </View>
-            <View style={styles.summaryInfo}>
-              <Text style={styles.summaryPlatform}>{params.project_name}</Text>
-              <Text style={styles.summaryCountry}>{params.country_name} verification number</Text>
+            <View style={styles.platformInfo}>
+              <Text style={styles.platformName}>{params.project_name}</Text>
+              <Text style={styles.platformSub}>{params.country_name} · SMS Verification</Text>
+            </View>
+            <View style={styles.providerTag}>
+              <Text style={styles.providerTagText}>Server B</Text>
             </View>
           </View>
 
           <View style={styles.divider} />
 
-          <View style={styles.priceRow}>
-            <Text style={styles.priceLabel}>Total</Text>
-            <Text style={styles.priceValue}>₦{price.toLocaleString()}</Text>
-          </View>
-        </View>
-
-        {/* Payment Method Info */}
-        <View style={styles.paymentSection}>
-          <Text style={styles.paymentTitle}>Payment Method</Text>
-          <View style={styles.paymentCard}>
-            <View style={styles.paymentIconRow}>
-              <View style={styles.paymentMethodIcon}>
-                <MaterialIcons name="credit-card" size={18} color={Colors.primary} />
-              </View>
-              <View style={styles.paymentMethodIcon}>
-                <MaterialIcons name="account-balance" size={18} color={Colors.primary} />
-              </View>
-              <View style={styles.paymentMethodIcon}>
-                <MaterialIcons name="smartphone" size={18} color={Colors.primary} />
-              </View>
+          {/* Price breakdown */}
+          <View style={styles.priceSection}>
+            <View style={styles.priceRow}>
+              <Text style={styles.priceRowLabel}>Service fee</Text>
+              <Text style={styles.priceRowValue}>₦{price.toLocaleString()}</Text>
             </View>
-            <View style={styles.paymentCardInfo}>
-              <Text style={styles.paymentCardTitle}>Paystack Secure Checkout</Text>
-              <Text style={styles.paymentCardSub}>Card · Bank Transfer · USSD — your choice</Text>
+            <View style={[styles.priceRow, styles.totalRow]}>
+              <Text style={styles.totalLabel}>Total</Text>
+              <Text style={styles.totalValue}>₦{price.toLocaleString()}</Text>
             </View>
           </View>
         </View>
 
-        {/* Purchase Error Banner */}
+        {/* ── Payment methods ── */}
+        <View style={styles.methodsCard}>
+          <Text style={styles.methodsTitle}>Pay with</Text>
+          <View style={styles.methodsList}>
+            {[
+              { icon: 'credit-card', label: 'Debit / Credit Card' },
+              { icon: 'account-balance', label: 'Bank Transfer' },
+              { icon: 'smartphone', label: 'USSD' },
+            ].map((m) => (
+              <View key={m.label} style={styles.methodRow}>
+                <View style={styles.methodIconWrap}>
+                  <MaterialIcons name={m.icon as any} size={18} color={Colors.primary} />
+                </View>
+                <Text style={styles.methodLabel}>{m.label}</Text>
+                <MaterialIcons name="check-circle" size={16} color={Colors.primary} style={{ opacity: 0.6 }} />
+              </View>
+            ))}
+          </View>
+          <View style={styles.secureRow}>
+            <MaterialIcons name="lock" size={12} color={Colors.textMuted} />
+            <Text style={styles.secureText}>Secured by Paystack · 256-bit TLS encryption</Text>
+          </View>
+        </View>
+
+        {/* ── Error banner ── */}
         {purchaseError && (
           <View style={styles.errorBanner}>
-            <View style={styles.errorBannerHeader}>
+            <View style={styles.errorBannerTop}>
               <MaterialIcons name="error-outline" size={18} color={Colors.error} />
               <Text style={styles.errorBannerTitle}>Purchase Failed</Text>
               <TouchableOpacity
-                onPress={async () => {
-                  await Haptics.selectionAsync();
-                  setPurchaseError(null);
-                }}
+                onPress={() => setPurchaseError(null)}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <MaterialIcons name="close" size={16} color={Colors.textMuted} />
               </TouchableOpacity>
             </View>
-            <Text style={styles.errorBannerMessage}>{purchaseError.message}</Text>
+            <Text style={styles.errorBannerMsg}>{purchaseError.message}</Text>
             {purchaseError.hint && (
-              <View style={styles.errorBannerHint}>
-                <MaterialIcons name="lightbulb-outline" size={13} color={Colors.warning} />
-                <Text style={styles.errorBannerHintText}>{purchaseError.hint}</Text>
-              </View>
+              <Text style={styles.errorBannerHint}>💡 {purchaseError.hint}</Text>
             )}
-            <View style={styles.errorBannerActions}>
+            <View style={styles.errorActions}>
               <TouchableOpacity
-                style={styles.errorActionBtn}
-                onPress={async () => {
-                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  router.back();
-                }}
+                style={styles.errorActionBack}
+                onPress={() => { setPurchaseError(null); router.back(); }}
                 activeOpacity={0.8}
               >
-                <MaterialIcons name="arrow-back" size={14} color={Colors.primary} />
-                <Text style={styles.errorActionText}>Change Selection</Text>
+                <Text style={styles.errorActionBackText}>Change selection</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.errorActionBtn, styles.errorActionBtnRetry]}
-                onPress={async () => {
-                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                  await handlePay();
-                }}
+                style={styles.errorActionRetry}
+                onPress={() => { setPurchaseError(null); handlePay(); }}
                 disabled={loading}
                 activeOpacity={0.8}
               >
                 <MaterialIcons name="refresh" size={14} color={Colors.black} />
-                <Text style={[styles.errorActionText, styles.errorActionTextRetry]}>Try Again</Text>
+                <Text style={styles.errorActionRetryText}>Try again</Text>
               </TouchableOpacity>
             </View>
           </View>
         )}
-
-        {/* What happens next */}
-        <View style={styles.whatsNext}>
-          <Text style={styles.whatsNextTitle}>What happens next</Text>
-          {[
-            'Choose card, bank transfer, or USSD on the payment page',
-            'Payment is processed securely via Paystack',
-            'A temporary phone number is instantly assigned to you',
-            'Your OTP is automatically captured and shown here',
-          ].map((step, i) => (
-            <View key={i} style={styles.nextStep}>
-              <View style={styles.nextStepNum}>
-                <Text style={styles.nextStepNumText}>{i + 1}</Text>
-              </View>
-              <Text style={styles.nextStepText}>{step}</Text>
-            </View>
-          ))}
-        </View>
       </ScrollView>
 
-      {/* CTA */}
-      <View style={[styles.ctaContainer, { paddingBottom: insets.bottom + 16 }]}>
-        <View style={styles.ctaInfo}>
-          <MaterialIcons name="lock" size={14} color={Colors.textSecondary} />
-          <Text style={styles.ctaInfoText}>Secured by Paystack · Card · Transfer · USSD</Text>
-        </View>
+      {/* ── Sticky Pay CTA ── */}
+      <View style={[styles.ctaBar, { paddingBottom: insets.bottom + 16 }]}>
         <TouchableOpacity
-          style={[styles.ctaBtn, loading && styles.ctaBtnDisabled]}
+          style={[styles.payBtn, loading && styles.payBtnDisabled]}
           onPress={handlePay}
           disabled={loading}
-          activeOpacity={0.85}
+          activeOpacity={0.88}
         >
           {loading ? (
-            <ActivityIndicator color={Colors.black} />
+            <View style={styles.payBtnLoading}>
+              <ActivityIndicator color={Colors.black} />
+              {stageLabel && <Text style={styles.payBtnLoadingText}>{stageLabel}</Text>}
+            </View>
           ) : (
             <>
-              <MaterialIcons name="payment" size={18} color={Colors.black} />
-              <Text style={styles.ctaBtnText}>Pay ₦{price.toLocaleString()}</Text>
+              <MaterialIcons name="payment" size={20} color={Colors.black} />
+              <Text style={styles.payBtnText}>Pay ₦{price.toLocaleString()}</Text>
             </>
           )}
         </TouchableOpacity>
       </View>
 
-      {/* Paystack WebView */}
+      {/* ── Paystack WebView ── */}
       <Modal visible={!!webViewUrl} animationType="slide" onRequestClose={() => setWebViewUrl(null)}>
-        <View style={[styles.webViewContainer, { paddingTop: insets.top }]}>
+        <View style={[styles.webViewWrap, { paddingTop: insets.top }]}>
           <View style={styles.webViewHeader}>
-            <TouchableOpacity onPress={() => setWebViewUrl(null)}>
-              <MaterialIcons name="close" size={24} color={Colors.text} />
+            <TouchableOpacity onPress={() => setWebViewUrl(null)} style={styles.backBtn}>
+              <MaterialIcons name="close" size={20} color={Colors.text} />
             </TouchableOpacity>
             <Text style={styles.webViewTitle}>Secure Payment</Text>
-            <View style={{ width: 24 }} />
+            <View style={{ width: 36 }} />
           </View>
           {webViewUrl && (
             <WebView
               source={{ uri: webViewUrl }}
-              onNavigationStateChange={(state) => handleWebViewNav(state.url)}
+              onNavigationStateChange={(s) => handleWebViewNav(s.url)}
               startInLoadingState
               renderLoading={() => <ActivityIndicator color={Colors.primary} style={{ flex: 1 }} />}
             />
@@ -315,16 +299,61 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.md,
+    width: 36, height: 36, borderRadius: Radius.md,
     backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
   headerTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   content: { padding: Spacing.lg, gap: Spacing.lg },
-  summaryCard: {
+
+  // Order card
+  orderCard: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+  },
+  platformRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    padding: Spacing.lg,
+  },
+  platformIcon: {
+    width: 52, height: 52, borderRadius: Radius.md,
+    backgroundColor: Colors.primaryMuted,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: Colors.primary,
+  },
+  platformInfo: { flex: 1 },
+  platformName: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold },
+  platformSub: { color: Colors.textSecondary, fontSize: FontSize.sm, marginTop: 2 },
+  providerTag: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+  },
+  providerTagText: { color: Colors.textMuted, fontSize: 10, fontWeight: FontWeight.semibold },
+  divider: { height: 1, backgroundColor: Colors.surfaceBorder, marginHorizontal: Spacing.lg },
+
+  priceSection: { padding: Spacing.lg, gap: Spacing.sm },
+  priceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  priceRowLabel: { color: Colors.textSecondary, fontSize: FontSize.sm },
+  priceRowValue: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  totalRow: { marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.surfaceBorder },
+  totalLabel: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
+  totalValue: { color: Colors.primary, fontSize: FontSize.xxl, fontWeight: FontWeight.bold },
+
+  // Payment methods
+  methodsCard: {
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
@@ -332,85 +361,89 @@ const styles = StyleSheet.create({
     padding: Spacing.lg,
     gap: Spacing.md,
   },
-  summaryTitle: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  platformIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: Radius.md,
-    backgroundColor: Colors.primaryMuted,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  summaryInfo: { flex: 1 },
-  summaryPlatform: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
-  summaryCountry: { color: Colors.textSecondary, fontSize: FontSize.sm },
-  divider: { height: 1, backgroundColor: Colors.surfaceBorder },
-  priceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  priceLabel: { color: Colors.textSecondary, fontSize: FontSize.md },
-  priceValue: { color: Colors.primary, fontSize: FontSize.xxl, fontWeight: FontWeight.bold },
-  paymentSection: { gap: Spacing.md },
-  paymentTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  paymentCard: {
+  methodsTitle: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.5 },
+  methodsList: { gap: Spacing.sm },
+  methodRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
+  },
+  methodIconWrap: {
+    width: 36, height: 36, borderRadius: Radius.sm,
     backgroundColor: Colors.primaryMuted,
+    alignItems: 'center', justifyContent: 'center',
   },
-  paymentIconRow: { flexDirection: 'row', gap: 6 },
-  paymentMethodIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.sm,
-    backgroundColor: Colors.surface,
+  methodLabel: { flex: 1, color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  secureRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-  },
-  paymentCardInfo: { flex: 1 },
-  paymentCardTitle: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
-  paymentCardSub: { color: Colors.textSecondary, fontSize: FontSize.xs, marginTop: 2 },
-  whatsNext: { gap: Spacing.md },
-  whatsNextTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  nextStep: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
-  nextStepNum: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: Colors.primaryMuted,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  nextStepNumText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
-  nextStepText: { flex: 1, color: Colors.textSecondary, fontSize: FontSize.sm, lineHeight: 22 },
-  ctaContainer: {
-    paddingHorizontal: Spacing.lg,
+    gap: 5,
+    marginTop: Spacing.sm,
     paddingTop: Spacing.md,
     borderTopWidth: 1,
     borderTopColor: Colors.surfaceBorder,
-    gap: Spacing.sm,
   },
-  ctaInfo: { flexDirection: 'row', alignItems: 'center', gap: 4, justifyContent: 'center' },
-  ctaInfoText: { color: Colors.textSecondary, fontSize: FontSize.xs },
-  ctaBtn: {
+  secureText: { color: Colors.textMuted, fontSize: 11 },
+
+  // Error banner
+  errorBanner: {
+    backgroundColor: Colors.errorMuted,
+    borderWidth: 1,
+    borderColor: Colors.error,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    gap: Spacing.md,
+  },
+  errorBannerTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  errorBannerTitle: { flex: 1, color: Colors.error, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  errorBannerMsg: {
+    color: Colors.text, fontSize: FontSize.sm, lineHeight: 20,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.sm, padding: Spacing.md,
+    borderLeftWidth: 3, borderLeftColor: Colors.error,
+    fontFamily: 'monospace',
+  },
+  errorBannerHint: { color: Colors.warning, fontSize: FontSize.xs, lineHeight: 18 },
+  errorActions: { flexDirection: 'row', gap: Spacing.sm },
+  errorActionBack: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.md, paddingVertical: 10,
+  },
+  errorActionBackText: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
+  errorActionRetry: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 5, backgroundColor: Colors.error,
+    borderRadius: Radius.md, paddingVertical: 10,
+  },
+  errorActionRetryText: { color: Colors.black, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
+
+  // Pay CTA bar
+  ctaBar: {
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
+    backgroundColor: Colors.background,
+    borderTopWidth: 1,
+    borderTopColor: Colors.surfaceBorder,
+    paddingTop: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+  },
+  payBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: Spacing.sm,
     backgroundColor: Colors.primary,
     borderRadius: Radius.md,
-    height: 52,
-    justifyContent: 'center',
+    height: 56,
   },
-  ctaBtnDisabled: { opacity: 0.5 },
-  ctaBtnText: { color: Colors.black, fontSize: FontSize.md, fontWeight: FontWeight.bold },
-  webViewContainer: { flex: 1, backgroundColor: Colors.background },
+  payBtnDisabled: { opacity: 0.6 },
+  payBtnText: { color: Colors.black, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  payBtnLoading: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  payBtnLoadingText: { color: Colors.black, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+
+  // WebView
+  webViewWrap: { flex: 1, backgroundColor: Colors.background },
   webViewHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -421,49 +454,4 @@ const styles = StyleSheet.create({
     borderBottomColor: Colors.surfaceBorder,
   },
   webViewTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  errorBanner: {
-    backgroundColor: Colors.errorMuted,
-    borderWidth: 1,
-    borderColor: Colors.error,
-    borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    gap: Spacing.md,
-  },
-  errorBannerHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  errorBannerTitle: { flex: 1, color: Colors.error, fontSize: FontSize.md, fontWeight: FontWeight.bold },
-  errorBannerMessage: {
-    color: Colors.text,
-    fontSize: FontSize.sm,
-    lineHeight: 22,
-    fontFamily: 'monospace',
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.sm,
-    padding: Spacing.md,
-    borderLeftWidth: 3,
-    borderLeftColor: Colors.error,
-  },
-  errorBannerHint: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.sm,
-    backgroundColor: Colors.warningMuted,
-    borderRadius: Radius.sm,
-    padding: Spacing.md,
-  },
-  errorBannerHintText: { flex: 1, color: Colors.warning, fontSize: FontSize.xs, lineHeight: 18 },
-  errorBannerActions: { flexDirection: 'row', gap: Spacing.sm },
-  errorActionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-    borderRadius: Radius.md,
-    paddingVertical: 10,
-  },
-  errorActionBtnRetry: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  errorActionText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
-  errorActionTextRetry: { color: Colors.black },
 });
