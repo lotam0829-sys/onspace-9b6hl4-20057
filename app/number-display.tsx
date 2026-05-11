@@ -11,6 +11,7 @@ import { useAlert } from '@/template';
 import { fetchOrder, updateOrderExpired, Order } from '@/services/orderService';
 import { requestNotificationPermissions, sendOTPReceivedNotification } from '@/services/notificationService';
 import { getSupabaseClient } from '@/template';
+import { getOTP } from '@/services/sociallyService';
 import { OTP_POLL_INTERVAL, OTP_TIMEOUT } from '@/constants/config';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
@@ -62,6 +63,7 @@ export default function NumberDisplayScreen() {
 
   const startPolling = () => {
     pollRef.current = setInterval(async () => {
+      // First check local DB for OTP (may have been set by webhook)
       const data = await fetchOrder(order_id);
       if (data) {
         setOrder(data);
@@ -69,9 +71,30 @@ export default function NumberDisplayScreen() {
           clearInterval(pollRef.current!);
           clearInterval(timerRef.current!);
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          // Send push notification for OTP
           if (data.otp) {
             await sendOTPReceivedNotification(data.project_name || 'Platform', data.otp);
+          }
+          return;
+        }
+        // If no OTP in DB yet, poll Socially.ng directly using order_reference
+        if (data.order_reference) {
+          try {
+            const { otp } = await getOTP(data.order_reference);
+            if (otp) {
+              // Save OTP to DB and update local state
+              const supabase = getSupabaseClient();
+              await supabase
+                .from('orders')
+                .update({ otp, status: 'completed' })
+                .eq('id', order_id);
+              setOrder((prev) => prev ? { ...prev, otp, status: 'completed' } : prev);
+              clearInterval(pollRef.current!);
+              clearInterval(timerRef.current!);
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              await sendOTPReceivedNotification(data.project_name || 'Platform', otp);
+            }
+          } catch {
+            // Silently ignore OTP poll errors
           }
         }
       }

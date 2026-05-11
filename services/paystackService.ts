@@ -28,25 +28,25 @@ async function invokeWithAuth(fn: string, body: Record<string, unknown>) {
   return data;
 }
 
-export async function initializePayment(email: string, amount: number, type: string) {
-  return invokeWithAuth('wallet-topup', { email, amount, type });
+/** Initialize a Paystack payment (card + bank transfer). Returns authorization_url + reference. */
+export async function initializePayment(
+  email: string,
+  amount: number,
+  type: string,
+  metadata?: Record<string, unknown>,
+) {
+  return invokeWithAuth('wallet-topup', { email, amount, type, metadata });
 }
 
-export async function chargeWithSavedCard(email: string, amount: number, authCode: string, type: string) {
-  return invokeWithAuth('wallet-topup', { email, amount, auth_code: authCode, type });
-}
-
-export async function initializeSaveCard(email: string) {
-  return invokeWithAuth('save-card', { email });
-}
-
+/** Purchase a number after Paystack payment has been confirmed. */
 export async function purchaseNumber(params: {
   provider_code: string;
-  country_id: number;
-  project_id: number;
+  country_code: number;
+  project_code: string;
   project_name: string;
   country_name: string;
   amount_paid: number;
+  paystack_reference: string;
 }) {
   return invokeWithAuth('purchase-number', params);
 }

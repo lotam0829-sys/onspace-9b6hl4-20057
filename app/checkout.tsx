@@ -9,45 +9,41 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert } from '@/template';
-import { useWallet } from '@/hooks/useWallet';
 import { useOrders } from '@/hooks/useOrders';
-import { initializePayment } from '@/services/paystackService';
-import { purchaseNumber } from '@/services/paystackService';
+import { initializePayment, purchaseNumber } from '@/services/paystackService';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
 export default function CheckoutScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
-  const { profile, walletBalance, hasCard, refreshProfile } = useWallet();
   const { refreshOrders } = useOrders();
   const { showAlert } = useAlert();
+
   const params = useLocalSearchParams<{
     provider_code: string;
-    country_id: string;
+    country_code: string;
     country_name: string;
-    project_id: string;
+    project_code: string;
     project_name: string;
     price: string;
   }>();
 
   const [loading, setLoading] = useState(false);
   const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
-  const [paymentDone, setPaymentDone] = useState(false);
+  const [paystackRef, setPaystackRef] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState<{ message: string; hint?: string } | null>(null);
 
   const price = parseFloat(params.price || '0');
-  const canUseWallet = walletBalance >= price;
 
   const parsePurchaseError = (rawMessage: string): { message: string; hint?: string } => {
     const msg = rawMessage.replace(/^Socially:\s*/i, '').trim();
     const lower = msg.toLowerCase();
-
     if (lower.includes('insufficient') || lower.includes('balance') || lower.includes('fund')) {
-      return { message: msg, hint: 'Your Socially.ng account balance is too low. Top up your account and try again.' };
+      return { message: msg, hint: 'Provider account balance is low. Please try again shortly or contact support.' };
     }
     if (lower.includes('not found') || lower.includes('route') || lower.includes('404')) {
-      return { message: msg, hint: 'This provider or country is currently unavailable. Try a different country or provider.' };
+      return { message: msg, hint: 'This provider or country is currently unavailable. Try a different country.' };
     }
     if (lower.includes('unavailable') || lower.includes('no number') || lower.includes('out of stock') || lower.includes('stock')) {
       return { message: msg, hint: 'No numbers are available for this country right now. Try a different country.' };
@@ -56,26 +52,29 @@ export default function CheckoutScreen() {
       return { message: msg, hint: 'API authentication issue. Please contact support.' };
     }
     if (lower.includes('project') || lower.includes('platform') || lower.includes('service')) {
-      return { message: msg, hint: 'This platform is not available on the selected provider. Try a different provider or country.' };
+      return { message: msg, hint: 'This platform may not be available on the selected provider/country combination.' };
+    }
+    if (lower.includes('payment') || lower.includes('verify')) {
+      return { message: msg, hint: 'Payment could not be verified. Please contact support with your reference.' };
     }
     return { message: msg };
   };
 
-  const executePurchase = async () => {
+  const executePurchase = async (reference: string) => {
     setPurchaseError(null);
     setLoading(true);
     try {
       const data = await purchaseNumber({
         provider_code: params.provider_code,
-        country_id: parseInt(params.country_id),
-        project_id: parseInt(params.project_id),
+        country_code: parseInt(params.country_code),
+        project_code: params.project_code,
         project_name: params.project_name,
         country_name: params.country_name,
         amount_paid: price,
+        paystack_reference: reference,
       });
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await refreshProfile();
       await refreshOrders();
 
       const orderId = data?.data?.order?.id;
@@ -96,56 +95,35 @@ export default function CheckoutScreen() {
 
   const handlePay = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-    if (canUseWallet) {
-      // Deduct from wallet directly
-      await executePurchase();
-    } else if (hasCard && profile?.card_auth_code) {
-      // Charge saved card first, then purchase
-      setLoading(true);
-      try {
-        const { chargeWithSavedCard } = await import('@/services/paystackService');
-        await chargeWithSavedCard(user?.email || '', price, profile.card_auth_code, 'wallet_topup');
-        await refreshProfile();
-        await executePurchase();
-      } catch (e: any) {
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        setPurchaseError({ message: e.message || 'Payment failed. Please try again.' });
-        setLoading(false);
+    setPurchaseError(null);
+    setLoading(true);
+    try {
+      const data = await initializePayment(user?.email || '', price, 'number_purchase');
+      if (data?.data?.authorization_url) {
+        setPaystackRef(data.data.reference);
+        setWebViewUrl(data.data.authorization_url);
       }
-    } else {
-      // Open Paystack WebView
-      setLoading(true);
-      try {
-        const data = await initializePayment(user?.email || '', price, 'wallet_topup');
-        if (data?.data?.authorization_url) {
-          setWebViewUrl(data.data.authorization_url);
-        }
-      } catch (e: any) {
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        setPurchaseError({ message: e.message || 'Payment initialization failed. Please try again.' });
-      } finally {
-        setLoading(false);
-      }
+    } catch (e: any) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setPurchaseError({ message: e.message || 'Payment initialization failed. Please try again.' });
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleWebViewNav = async (url: string) => {
     if (url.includes('numvault.app/payment/callback') || url.includes('paystack.com/close')) {
       setWebViewUrl(null);
-      setPaymentDone(true);
-      // Wait for webhook to credit wallet, then purchase
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      showAlert('Payment Received', 'Processing your number purchase...', [
-        { text: 'OK', onPress: async () => {
-          await refreshProfile();
-          await executePurchase();
-        }}
-      ]);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      if (paystackRef) {
+        // Small delay to let Paystack finalize the transaction
+        setTimeout(() => executePurchase(paystackRef), 1500);
+      } else {
+        setPurchaseError({ message: 'Payment reference lost. Please contact support.' });
+      }
     }
   };
-
-  const shortfall = price - walletBalance;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -188,42 +166,26 @@ export default function CheckoutScreen() {
           </View>
         </View>
 
-        {/* Wallet Balance */}
-        <View style={styles.paymentOptions}>
+        {/* Payment Method Info */}
+        <View style={styles.paymentSection}>
           <Text style={styles.paymentTitle}>Payment Method</Text>
-
-          <View style={[styles.optionCard, canUseWallet && styles.optionCardSelected]}>
-            <MaterialIcons name="account-balance-wallet" size={20} color={canUseWallet ? Colors.primary : Colors.textMuted} />
-            <View style={styles.optionInfo}>
-              <Text style={[styles.optionName, canUseWallet && styles.optionNameActive]}>Wallet Balance</Text>
-              <Text style={styles.optionSub}>₦{Number(walletBalance).toLocaleString()} available</Text>
-            </View>
-            {canUseWallet && (
-              <View style={styles.recommendBadge}>
-                <Text style={styles.recommendText}>Recommended</Text>
+          <View style={styles.paymentCard}>
+            <View style={styles.paymentIconRow}>
+              <View style={styles.paymentMethodIcon}>
+                <MaterialIcons name="credit-card" size={18} color={Colors.primary} />
               </View>
-            )}
+              <View style={styles.paymentMethodIcon}>
+                <MaterialIcons name="account-balance" size={18} color={Colors.primary} />
+              </View>
+              <View style={styles.paymentMethodIcon}>
+                <MaterialIcons name="smartphone" size={18} color={Colors.primary} />
+              </View>
+            </View>
+            <View style={styles.paymentCardInfo}>
+              <Text style={styles.paymentCardTitle}>Paystack Secure Checkout</Text>
+              <Text style={styles.paymentCardSub}>Card · Bank Transfer · USSD — your choice</Text>
+            </View>
           </View>
-
-          {!canUseWallet && (
-            <View style={styles.insufficientNote}>
-              <MaterialIcons name="info-outline" size={14} color={Colors.warning} />
-              <Text style={styles.insufficientText}>
-                Wallet balance insufficient. {hasCard ? `Saved card will be charged ₦${price.toLocaleString()}.` : `You need ₦${shortfall.toLocaleString()} more. Add money via Paystack.`}
-              </Text>
-            </View>
-          )}
-
-          {hasCard && !canUseWallet && (
-            <View style={[styles.optionCard, styles.optionCardSelected]}>
-              <MaterialIcons name="credit-card" size={20} color={Colors.primary} />
-              <View style={styles.optionInfo}>
-                <Text style={styles.optionNameActive}>{profile?.card_brand?.toUpperCase()} •••• {profile?.card_last4}</Text>
-                <Text style={styles.optionSub}>Saved card</Text>
-              </View>
-              <MaterialIcons name="check-circle" size={18} color={Colors.primary} />
-            </View>
-          )}
         </View>
 
         {/* Purchase Error Banner */}
@@ -265,8 +227,7 @@ export default function CheckoutScreen() {
                 style={[styles.errorActionBtn, styles.errorActionBtnRetry]}
                 onPress={async () => {
                   await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                  setPurchaseError(null);
-                  await executePurchase();
+                  await handlePay();
                 }}
                 disabled={loading}
                 activeOpacity={0.8}
@@ -282,10 +243,10 @@ export default function CheckoutScreen() {
         <View style={styles.whatsNext}>
           <Text style={styles.whatsNextTitle}>What happens next</Text>
           {[
-            "Payment is processed securely",
-            "A temporary phone number is assigned to you",
-            "Open the platform and enter the number",
-            "Your OTP is automatically captured and shown here",
+            'Choose card, bank transfer, or USSD on the payment page',
+            'Payment is processed securely via Paystack',
+            'A temporary phone number is instantly assigned to you',
+            'Your OTP is automatically captured and shown here',
           ].map((step, i) => (
             <View key={i} style={styles.nextStep}>
               <View style={styles.nextStepNum}>
@@ -301,7 +262,7 @@ export default function CheckoutScreen() {
       <View style={[styles.ctaContainer, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.ctaInfo}>
           <MaterialIcons name="lock" size={14} color={Colors.textSecondary} />
-          <Text style={styles.ctaInfoText}>Secured by Paystack</Text>
+          <Text style={styles.ctaInfoText}>Secured by Paystack · Card · Transfer · USSD</Text>
         </View>
         <TouchableOpacity
           style={[styles.ctaBtn, loading && styles.ctaBtnDisabled]}
@@ -313,18 +274,8 @@ export default function CheckoutScreen() {
             <ActivityIndicator color={Colors.black} />
           ) : (
             <>
-              <MaterialIcons
-                name={canUseWallet ? "account-balance-wallet" : hasCard ? "credit-card" : "payment"}
-                size={18}
-                color={Colors.black}
-              />
-              <Text style={styles.ctaBtnText}>
-                {canUseWallet
-                  ? `Pay ₦${price.toLocaleString()} from Wallet`
-                  : hasCard
-                    ? `Charge Card ₦${price.toLocaleString()}`
-                    : `Pay ₦${price.toLocaleString()} with Card`}
-              </Text>
+              <MaterialIcons name="payment" size={18} color={Colors.black} />
+              <Text style={styles.ctaBtnText}>Pay ₦{price.toLocaleString()}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -398,39 +349,31 @@ const styles = StyleSheet.create({
   priceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   priceLabel: { color: Colors.textSecondary, fontSize: FontSize.md },
   priceValue: { color: Colors.primary, fontSize: FontSize.xxl, fontWeight: FontWeight.bold },
-  paymentOptions: { gap: Spacing.md },
+  paymentSection: { gap: Spacing.md },
   paymentTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
-  optionCard: {
+  paymentCard: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
     backgroundColor: Colors.surface,
     borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
+    borderColor: Colors.primary,
     borderRadius: Radius.md,
     padding: Spacing.md,
-  },
-  optionCardSelected: { borderColor: Colors.primary, backgroundColor: Colors.primaryMuted },
-  optionInfo: { flex: 1 },
-  optionName: { color: Colors.textSecondary, fontSize: FontSize.md, fontWeight: FontWeight.medium },
-  optionNameActive: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  optionSub: { color: Colors.textSecondary, fontSize: FontSize.xs },
-  recommendBadge: {
     backgroundColor: Colors.primaryMuted,
-    borderRadius: Radius.full,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
   },
-  recommendText: { color: Colors.primary, fontSize: 10, fontWeight: FontWeight.semibold },
-  insufficientNote: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.sm,
-    backgroundColor: Colors.warningMuted,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
+  paymentIconRow: { flexDirection: 'row', gap: 6 },
+  paymentMethodIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  insufficientText: { flex: 1, color: Colors.warning, fontSize: FontSize.xs, lineHeight: 18 },
+  paymentCardInfo: { flex: 1 },
+  paymentCardTitle: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  paymentCardSub: { color: Colors.textSecondary, fontSize: FontSize.xs, marginTop: 2 },
   whatsNext: { gap: Spacing.md },
   whatsNextTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
   nextStep: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
@@ -486,17 +429,8 @@ const styles = StyleSheet.create({
     padding: Spacing.lg,
     gap: Spacing.md,
   },
-  errorBannerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  errorBannerTitle: {
-    flex: 1,
-    color: Colors.error,
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-  },
+  errorBannerHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  errorBannerTitle: { flex: 1, color: Colors.error, fontSize: FontSize.md, fontWeight: FontWeight.bold },
   errorBannerMessage: {
     color: Colors.text,
     fontSize: FontSize.sm,
@@ -516,16 +450,8 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     padding: Spacing.md,
   },
-  errorBannerHintText: {
-    flex: 1,
-    color: Colors.warning,
-    fontSize: FontSize.xs,
-    lineHeight: 18,
-  },
-  errorBannerActions: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-  },
+  errorBannerHintText: { flex: 1, color: Colors.warning, fontSize: FontSize.xs, lineHeight: 18 },
+  errorBannerActions: { flexDirection: 'row', gap: Spacing.sm },
   errorActionBtn: {
     flex: 1,
     flexDirection: 'row',
@@ -537,16 +463,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     paddingVertical: 10,
   },
-  errorActionBtnRetry: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  errorActionText: {
-    color: Colors.primary,
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
-  },
-  errorActionTextRetry: {
-    color: Colors.black,
-  },
+  errorActionBtnRetry: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  errorActionText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.semibold },
+  errorActionTextRetry: { color: Colors.black },
 });

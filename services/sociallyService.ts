@@ -9,18 +9,17 @@ export interface Provider {
 }
 
 export interface Country {
-  country_id: number;
+  country_code: number;  // API field name
   title: string;
   code: string;
 }
 
 export interface Package {
-  country_id: number;
-  project_id: number;
-  project_code: string;
-  project_name: string;
-  price: number; // raw price from API
-  displayPrice: number; // with 40% markup
+  country_code: number;
+  project_code: string;   // e.g. "tk", "tg"
+  project_name: string;   // e.g. "TikTok/Douyin"
+  price: number;          // raw price from API (Naira)
+  displayPrice: number;   // with 40% markup
 }
 
 async function sociallyProxy(path: string, method = 'GET', body?: Record<string, unknown>) {
@@ -54,25 +53,35 @@ export async function getCountries(providerCode: string): Promise<Country[]> {
   return data?.data || [];
 }
 
-export async function getPackages(providerCode: string, countryId: number): Promise<Package[]> {
+export async function getPackages(providerCode: string, countryCode: number): Promise<Package[]> {
   const data = await sociallyProxy('/sms/verification/service/provider/packages', 'POST', {
     provider_code: providerCode,
-    country_id: countryId,
+    country_id: countryCode,  // packages endpoint still uses country_id as field name
   });
 
   const packages: Package[] = (data?.data || []).map((pkg: any) => ({
-    ...pkg,
+    country_code: pkg.country_code,
+    project_code: pkg.project_code,
+    project_name: pkg.project_name,
+    price: pkg.price,
     displayPrice: Math.ceil(pkg.price * MARKUP),
   }));
 
   return packages;
 }
 
-export async function getOTP(reference: string): Promise<string | null> {
+// Polls OTP using the reference from the buy endpoint
+export async function getOTP(reference: string): Promise<{ otp: string | null; mobile_number: string | null }> {
   try {
-    const data = await sociallyProxy(`/sms/verification/otp?reference=${reference}`);
-    return data?.data?.otp || data?.data?.code || null;
+    const data = await sociallyProxy(`/request/sms/verification/${reference}/otp`);
+    // Response: { status, message, data: { mobile_number } }
+    // OTP is embedded in the message: "Your OTP (0891) has been successfully received"
+    const message: string = data?.message || '';
+    const otpMatch = message.match(/\((\d+)\)/);
+    const otp = otpMatch ? otpMatch[1] : null;
+    const mobileNumber = data?.data?.mobile_number || null;
+    return { otp, mobile_number: mobileNumber };
   } catch {
-    return null;
+    return { otp: null, mobile_number: null };
   }
 }

@@ -1,25 +1,25 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  StatusBar, TextInput, FlatList, Modal, ActivityIndicator,
+  StatusBar, TextInput, ActivityIndicator, Modal,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/template';
-import { useWallet } from '@/hooks/useWallet';
 import { getProviders, getCountries, getPackages, Provider, Country, Package } from '@/services/sociallyService';
 import { PLATFORM_DESCRIPTIONS, PLATFORM_ICONS } from '@/constants/config';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
-type Step = 'platform' | 'country' | 'confirm';
+const DEFAULT_PROVIDER = 'server-b';
+
+type Step = 'platform' | 'country';
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
-  const { profile, walletBalance, refreshProfile } = useWallet();
 
   const [step, setStep] = useState<Step>('platform');
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -35,7 +35,6 @@ export default function HomeScreen() {
   const [descModal, setDescModal] = useState<{ name: string; desc: string } | null>(null);
 
   useEffect(() => {
-    refreshProfile();
     loadProviders();
   }, []);
 
@@ -44,9 +43,11 @@ export default function HomeScreen() {
     try {
       const data = await getProviders();
       setProviders(data);
-      if (data.length > 0) {
-        setSelectedProvider(data[0]);
-        loadCountries(data[0].provider_code);
+      // Always prefer server-b; fall back to first provider
+      const serverB = data.find((p) => p.provider_code === DEFAULT_PROVIDER) || data[0];
+      if (serverB) {
+        setSelectedProvider(serverB);
+        loadCountries(serverB.provider_code);
       }
     } catch (e) {
       console.error('Failed to load providers:', e);
@@ -57,6 +58,7 @@ export default function HomeScreen() {
 
   const loadCountries = async (providerCode: string) => {
     setLoadingCountries(true);
+    setCountries([]);
     try {
       const data = await getCountries(providerCode);
       setCountries(data);
@@ -67,11 +69,12 @@ export default function HomeScreen() {
     }
   };
 
-  const loadPackages = async (countryId: number) => {
+  const loadPackages = async (countryCode: number) => {
     if (!selectedProvider) return;
     setLoadingPackages(true);
+    setPackages([]);
     try {
-      const data = await getPackages(selectedProvider.provider_code, countryId);
+      const data = await getPackages(selectedProvider.provider_code, countryCode);
       setPackages(data);
     } catch (e) {
       console.error('Failed to load packages:', e);
@@ -85,12 +88,13 @@ export default function HomeScreen() {
     setSelectedCountry(country);
     setSearch('');
     setStep('platform');
-    loadPackages(country.country_id);
+    loadPackages(country.country_code);
   };
 
   const handlePackageSelect = async (pkg: Package) => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const desc = PLATFORM_DESCRIPTIONS[pkg.project_name] ||
+    const desc =
+      PLATFORM_DESCRIPTIONS[pkg.project_name] ||
       `Get a real temporary number from your chosen country to complete verification on ${pkg.project_name}. The OTP will be delivered to you automatically.`;
     setSelectedPackage(pkg);
     setDescModal({ name: pkg.project_name, desc });
@@ -104,20 +108,20 @@ export default function HomeScreen() {
       pathname: '/checkout',
       params: {
         provider_code: selectedProvider.provider_code,
-        country_id: String(selectedCountry.country_id),
+        country_code: String(selectedCountry.country_code),
         country_name: selectedCountry.title,
-        project_id: String(selectedPackage.project_id),
+        project_code: selectedPackage.project_code,
         project_name: selectedPackage.project_name,
         price: String(selectedPackage.displayPrice),
       },
     });
   };
 
-  const filteredCountries = countries.filter(c =>
+  const filteredCountries = countries.filter((c) =>
     c.title.toLowerCase().includes(search.toLowerCase())
   );
 
-  const filteredPackages = packages.filter(p =>
+  const filteredPackages = packages.filter((p) =>
     p.project_name.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -131,14 +135,10 @@ export default function HomeScreen() {
           <Text style={styles.appName}>NumVault</Text>
           <Text style={styles.headerSub}>SMS Verification Numbers</Text>
         </View>
-        <TouchableOpacity
-          style={styles.walletBadge}
-          onPress={() => router.push('/(tabs)/wallet')}
-          activeOpacity={0.8}
-        >
-          <MaterialIcons name="account-balance-wallet" size={16} color={Colors.primary} />
-          <Text style={styles.walletText}>₦{Number(walletBalance).toLocaleString()}</Text>
-        </TouchableOpacity>
+        <View style={styles.providerBadge}>
+          <MaterialIcons name="dns" size={13} color={Colors.primary} />
+          <Text style={styles.providerText}>{selectedProvider?.provider_name || 'SERVER B'}</Text>
+        </View>
       </View>
 
       {/* Trust badges */}
@@ -163,11 +163,11 @@ export default function HomeScreen() {
           <StepDot num={2} label="Country" active={step === 'country'} done={!!selectedCountry} />
         </View>
 
-        {/* Country selector */}
+        {/* Section header */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>
-              {step === 'country' ? "Choose Country" : "Platform"}
+              {step === 'country' ? 'Choose Country' : 'Choose Platform'}
             </Text>
             <TouchableOpacity
               onPress={async () => {
@@ -178,7 +178,7 @@ export default function HomeScreen() {
               style={styles.switchBtn}
             >
               <Text style={styles.switchBtnText}>
-                {step === 'country' ? "Pick Platform" : "Change Country"}
+                {step === 'country' ? 'Pick Platform' : 'Change Country'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -203,7 +203,7 @@ export default function HomeScreen() {
             style={styles.searchInput}
             value={search}
             onChangeText={setSearch}
-            placeholder={step === 'country' ? "Search countries..." : "Search platforms..."}
+            placeholder={step === 'country' ? 'Search countries...' : 'Search platforms...'}
             placeholderTextColor={Colors.textMuted}
           />
           {search.length > 0 && (
@@ -223,14 +223,17 @@ export default function HomeScreen() {
             ) : (
               filteredCountries.map((country) => (
                 <TouchableOpacity
-                  key={country.country_id}
-                  style={[styles.listItem, selectedCountry?.country_id === country.country_id && styles.listItemSelected]}
+                  key={country.country_code}
+                  style={[
+                    styles.listItem,
+                    selectedCountry?.country_code === country.country_code && styles.listItemSelected,
+                  ]}
                   onPress={() => handleCountrySelect(country)}
                   activeOpacity={0.75}
                 >
                   <Text style={styles.countryFlag}>🌍</Text>
                   <Text style={styles.listItemText}>{country.title}</Text>
-                  {selectedCountry?.country_id === country.country_id && (
+                  {selectedCountry?.country_code === country.country_code && (
                     <MaterialIcons name="check-circle" size={18} color={Colors.primary} />
                   )}
                 </TouchableOpacity>
@@ -246,7 +249,7 @@ export default function HomeScreen() {
               <View style={styles.loadingBox}>
                 <ActivityIndicator color={Colors.primary} />
                 <Text style={styles.loadingText}>
-                  {selectedCountry ? "Loading available platforms..." : "Select a country to see platforms"}
+                  {selectedCountry ? 'Loading available platforms...' : 'Select a country to see platforms'}
                 </Text>
               </View>
             ) : !selectedCountry ? (
@@ -270,7 +273,7 @@ export default function HomeScreen() {
               <View style={styles.packageGrid}>
                 {filteredPackages.map((pkg) => (
                   <TouchableOpacity
-                    key={pkg.project_id}
+                    key={pkg.project_code}
                     style={styles.packageCard}
                     onPress={() => handlePackageSelect(pkg)}
                     activeOpacity={0.75}
@@ -378,20 +381,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
   },
-  appName: {
-    color: Colors.text,
-    fontSize: FontSize.xl,
-    fontWeight: FontWeight.bold,
-    letterSpacing: 0.5,
-  },
-  headerSub: {
-    color: Colors.textSecondary,
-    fontSize: FontSize.xs,
-  },
-  walletBadge: {
+  appName: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold, letterSpacing: 0.5 },
+  headerSub: { color: Colors.textSecondary, fontSize: FontSize.xs },
+  providerBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
     backgroundColor: Colors.primaryMuted,
     borderWidth: 1,
     borderColor: Colors.primary,
@@ -399,11 +394,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
-  walletText: {
-    color: Colors.primary,
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.bold,
-  },
+  providerText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
   trustRow: {
     flexDirection: 'row',
     justifyContent: 'center',
@@ -422,37 +413,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
   },
-  trustText: {
-    color: Colors.textSecondary,
-    fontSize: 10,
-  },
+  trustText: { color: Colors.textSecondary, fontSize: 10 },
   stepIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: Spacing.xl,
     marginBottom: Spacing.md,
   },
-  stepLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: Colors.surfaceBorder,
-    marginHorizontal: Spacing.md,
-  },
-  section: {
-    paddingHorizontal: Spacing.lg,
-    marginBottom: Spacing.sm,
-  },
+  stepLine: { flex: 1, height: 1, backgroundColor: Colors.surfaceBorder, marginHorizontal: Spacing.md },
+  section: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.sm },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: Spacing.sm,
   },
-  sectionTitle: {
-    color: Colors.text,
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-  },
+  sectionTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   switchBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -460,11 +436,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
   },
-  switchBtnText: {
-    color: Colors.textSecondary,
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.medium,
-  },
+  switchBtnText: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: FontWeight.medium },
   selectedCountry: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -476,12 +448,7 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
   },
   flagEmoji: { fontSize: 20 },
-  selectedCountryText: {
-    flex: 1,
-    color: Colors.text,
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.medium,
-  },
+  selectedCountryText: { flex: 1, color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.medium },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -495,15 +462,8 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     marginBottom: Spacing.md,
   },
-  searchInput: {
-    flex: 1,
-    color: Colors.text,
-    fontSize: FontSize.md,
-    includeFontPadding: false,
-  },
-  listContainer: {
-    paddingHorizontal: Spacing.lg,
-  },
+  searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.md, includeFontPadding: false },
+  listContainer: { paddingHorizontal: Spacing.lg },
   listItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -515,36 +475,13 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     marginBottom: Spacing.sm,
   },
-  listItemSelected: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryMuted,
-  },
+  listItemSelected: { borderColor: Colors.primary, backgroundColor: Colors.primaryMuted },
   countryFlag: { fontSize: 18 },
-  listItemText: {
-    flex: 1,
-    color: Colors.text,
-    fontSize: FontSize.md,
-  },
-  loadingBox: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xl,
-    gap: Spacing.md,
-  },
-  loadingText: {
-    color: Colors.textSecondary,
-    fontSize: FontSize.sm,
-    textAlign: 'center',
-  },
-  noCountry: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xl,
-    gap: Spacing.md,
-  },
-  noCountryTitle: {
-    color: Colors.text,
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-  },
+  listItemText: { flex: 1, color: Colors.text, fontSize: FontSize.md },
+  loadingBox: { alignItems: 'center', paddingVertical: Spacing.xl, gap: Spacing.md },
+  loadingText: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center' },
+  noCountry: { alignItems: 'center', paddingVertical: Spacing.xl, gap: Spacing.md },
+  noCountryTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   noCountryText: {
     color: Colors.textSecondary,
     fontSize: FontSize.sm,
@@ -558,22 +495,9 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     marginTop: Spacing.sm,
   },
-  noCountryBtnText: {
-    color: Colors.black,
-    fontWeight: FontWeight.bold,
-    fontSize: FontSize.md,
-  },
-  emptyText: {
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    paddingVertical: Spacing.xl,
-    fontSize: FontSize.sm,
-  },
-  packageGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.md,
-  },
+  noCountryBtnText: { color: Colors.black, fontWeight: FontWeight.bold, fontSize: FontSize.md },
+  emptyText: { color: Colors.textSecondary, textAlign: 'center', paddingVertical: Spacing.xl, fontSize: FontSize.sm },
+  packageGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   packageCard: {
     width: '47%',
     backgroundColor: Colors.surface,
@@ -584,22 +508,9 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: Spacing.sm,
   },
-  packageName: {
-    color: Colors.text,
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    lineHeight: 18,
-  },
-  packagePrice: {
-    color: Colors.primary,
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: Colors.overlay,
-    justifyContent: 'flex-end',
-  },
+  packageName: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.semibold, lineHeight: 18 },
+  packagePrice: { color: Colors.primary, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  modalOverlay: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
   modalCard: {
     backgroundColor: Colors.surface,
     borderTopLeftRadius: Radius.xl,
@@ -610,19 +521,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
   },
-  modalHandle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.surfaceBorder,
-    marginBottom: Spacing.lg,
-  },
-  modalTitle: {
-    color: Colors.text,
-    fontSize: FontSize.xl,
-    fontWeight: FontWeight.bold,
-    marginBottom: Spacing.sm,
-  },
+  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.surfaceBorder, marginBottom: Spacing.lg },
+  modalTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold, marginBottom: Spacing.sm },
   modalDesc: {
     color: Colors.textSecondary,
     fontSize: FontSize.sm,
@@ -653,16 +553,7 @@ const styles = StyleSheet.create({
     width: '100%',
     marginBottom: Spacing.sm,
   },
-  modalCtaText: {
-    color: Colors.black,
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-  },
-  modalCancel: {
-    paddingVertical: Spacing.md,
-  },
-  modalCancelText: {
-    color: Colors.textSecondary,
-    fontSize: FontSize.sm,
-  },
+  modalCtaText: { color: Colors.black, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  modalCancel: { paddingVertical: Spacing.md },
+  modalCancelText: { color: Colors.textSecondary, fontSize: FontSize.sm },
 });
