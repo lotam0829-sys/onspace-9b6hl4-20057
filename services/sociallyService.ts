@@ -120,7 +120,7 @@ export async function getCountries(providerCode: string): Promise<Country[]> {
 export async function getPackages(providerCode: string, countryCode: string): Promise<Package[]> {
   const data = await sociallyProxy('/sms/verification/service/provider/packages', 'POST', {
     provider_code: providerCode,
-    country_id: countryCode,
+    country_code: countryCode,
   });
 
   const packages: Package[] = (data?.data || []).map((pkg: any) => ({
