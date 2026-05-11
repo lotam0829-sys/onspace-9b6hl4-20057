@@ -13,7 +13,7 @@ export interface Provider {
  * not a numeric country code. The "title" is the display name (e.g. "TikTok - USA").
  */
 export interface Country {
-  country_code: string;  // string for Server B (service code like "tiktok")
+  country_code: string;
   title: string;
   code: string;
 }
@@ -25,6 +25,59 @@ export interface Package {
   price: number;
   displayPrice: number;
 }
+
+/** A service item with pre-loaded price — only services with valid prices are included. */
+export interface ServiceItem {
+  country_code: string;
+  title: string;
+  code: string;
+  package: Package;
+  category: ServiceCategory;
+}
+
+export type ServiceCategory =
+  | 'All'
+  | 'Social'
+  | 'Messaging'
+  | 'Finance'
+  | 'Shopping'
+  | 'Other';
+
+// ── Category detection ──────────────────────────────────────────────────────
+
+const CATEGORY_KEYWORDS: Record<ServiceCategory, string[]> = {
+  All: [],
+  Social: [
+    'tiktok', 'instagram', 'facebook', 'twitter', 'x.com', 'snapchat', 'youtube',
+    'pinterest', 'linkedin', 'reddit', 'tumblr', 'vk', 'ok.ru', 'weibo', 'douyin',
+    'clubhouse', 'discord', 'twitch',
+  ],
+  Messaging: [
+    'whatsapp', 'telegram', 'signal', 'viber', 'line', 'wechat', 'kakao',
+    'skype', 'imo', 'zalo', 'kik', 'textme', 'textplus', 'talkatone',
+  ],
+  Finance: [
+    'paypal', 'binance', 'coinbase', 'cashapp', 'cash app', 'stripe', 'revolut',
+    'wise', 'transferwise', 'crypto', 'bitcoin', 'blockchain', 'bybit', 'okx',
+    'kraken', 'kucoin', 'huobi', 'bank', 'mpesa', 'paga', 'chipper',
+  ],
+  Shopping: [
+    'amazon', 'alibaba', 'aliexpress', 'ebay', 'shopify', 'etsy',
+    'wish', 'shein', 'jumia', 'konga',
+  ],
+  Other: [],
+};
+
+export function detectCategory(title: string): ServiceCategory {
+  const lower = title.toLowerCase();
+  for (const [cat, keywords] of Object.entries(CATEGORY_KEYWORDS) as [ServiceCategory, string[]][]) {
+    if (cat === 'All' || cat === 'Other') continue;
+    if (keywords.some((kw) => lower.includes(kw))) return cat;
+  }
+  return 'Other';
+}
+
+// ── Proxy helper ────────────────────────────────────────────────────────────
 
 async function sociallyProxy(path: string, method = 'GET', body?: Record<string, unknown>) {
   const { data: { session } } = await supabase.auth.getSession();
@@ -47,19 +100,16 @@ async function sociallyProxy(path: string, method = 'GET', body?: Record<string,
   return res.data;
 }
 
+// ── API functions ────────────────────────────────────────────────────────────
+
 export async function getProviders(): Promise<Provider[]> {
   const data = await sociallyProxy('/sms/verification/providers');
   return data?.data || [];
 }
 
-/**
- * For Server B: returns services as "countries", where country_code = service string
- * e.g. { country_code: "tiktok", title: "TikTok - USA", code: "tiktok" }
- */
 export async function getCountries(providerCode: string): Promise<Country[]> {
   const data = await sociallyProxy(`/sms/verification/provider/${providerCode}/countries`);
   const raw = data?.data || [];
-  // Normalise: ensure country_code is always a string
   return raw.map((item: any) => ({
     country_code: String(item.country_code),
     title: item.title || item.name || String(item.country_code),
@@ -67,9 +117,6 @@ export async function getCountries(providerCode: string): Promise<Country[]> {
   }));
 }
 
-/**
- * For Server B, pass the service string as country_id (that's what the packages endpoint expects)
- */
 export async function getPackages(providerCode: string, countryCode: string): Promise<Package[]> {
   const data = await sociallyProxy('/sms/verification/service/provider/packages', 'POST', {
     provider_code: providerCode,
@@ -88,8 +135,46 @@ export async function getPackages(providerCode: string, countryCode: string): Pr
 }
 
 /**
+ * Loads ALL services with pre-fetched prices. Only returns services
+ * that have at least one valid package with a non-zero price.
+ * Uses Promise.allSettled so a single failing package fetch doesn't block others.
+ */
+export async function getServicesWithPrices(providerCode: string): Promise<ServiceItem[]> {
+  const countries = await getCountries(providerCode);
+
+  // Batch fetch packages in parallel — max 20 concurrent to avoid rate limits
+  const BATCH = 20;
+  const results: ServiceItem[] = [];
+
+  for (let i = 0; i < countries.length; i += BATCH) {
+    const batch = countries.slice(i, i + BATCH);
+    const settled = await Promise.allSettled(
+      batch.map((country) => getPackages(providerCode, country.country_code))
+    );
+
+    settled.forEach((result, idx) => {
+      const country = batch[idx];
+      if (result.status === 'fulfilled') {
+        const pkgs = result.value.filter((p) => p.price > 0 && p.displayPrice > 0);
+        if (pkgs.length > 0) {
+          results.push({
+            country_code: country.country_code,
+            title: country.title,
+            code: country.code,
+            package: pkgs[0],
+            category: detectCategory(country.title),
+          });
+        }
+      }
+      // silently skip services that failed or returned no packages
+    });
+  }
+
+  return results;
+}
+
+/**
  * GET /request/sms/verification/{reference}/otp
- * OTP is embedded in the message string: "Your OTP (0891) has been successfully received"
  */
 export async function getOTP(reference: string): Promise<{ otp: string | null; mobile_number: string | null }> {
   try {
