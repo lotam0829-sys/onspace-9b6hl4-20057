@@ -17,14 +17,24 @@ Deno.serve(async (req: Request) => {
       'Accept': 'application/json',
     };
 
-    let fetchOptions: RequestInit = { method: method || 'GET', headers };
+    const httpMethod = method || 'GET';
+    let fetchOptions: RequestInit = { method: httpMethod, headers };
 
-    if (body && (method === 'POST' || method === 'PUT')) {
+    if (body && (httpMethod === 'POST' || httpMethod === 'PUT')) {
       const form = new FormData();
       for (const [key, value] of Object.entries(body)) {
         form.append(key, String(value));
       }
       fetchOptions.body = form;
+    }
+
+    // For GET requests with a body, append as query params
+    if (body && httpMethod === 'GET') {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(body)) {
+        params.append(key, String(value));
+      }
+      // params unused for path-based GET endpoints like OTP
     }
 
     const url = path.startsWith('http') ? path : `${SOCIALLY_BASE}${path}`;

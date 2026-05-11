@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, StatusBar,
-  Clipboard, Animated, ScrollView,
+  Clipboard, ScrollView, ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -28,18 +28,18 @@ export default function NumberDisplayScreen() {
   const [expired, setExpired] = useState(false);
   const [copiedNumber, setCopiedNumber] = useState(false);
   const [copiedOTP, setCopiedOTP] = useState(false);
+  const [copiedRef, setCopiedRef] = useState(false);
+  const [requestingOTP, setRequestingOTP] = useState(false);
+  const [otpRequested, setOtpRequested] = useState(false);
 
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     if (!order_id) return;
     requestNotificationPermissions();
     loadOrder();
-    startPolling();
     startTimer();
-    startPulse();
 
     return () => {
       clearInterval(pollRef.current!);
@@ -49,21 +49,16 @@ export default function NumberDisplayScreen() {
 
   const loadOrder = async () => {
     const data = await fetchOrder(order_id);
-    if (data) setOrder(data);
-  };
-
-  const startPulse = () => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.05, duration: 800, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
-      ])
-    ).start();
+    if (data) {
+      setOrder(data);
+      // If order already has OTP, no need to poll
+      if (data.otp || data.status === 'completed') return;
+    }
   };
 
   const startPolling = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
-      // First check local DB for OTP (may have been set by webhook)
       const data = await fetchOrder(order_id);
       if (data) {
         setOrder(data);
@@ -76,13 +71,10 @@ export default function NumberDisplayScreen() {
           }
           return;
         }
-        // If no OTP in DB yet, poll Socially.ng directly using order_reference
         if (data.order_reference) {
           try {
             const { otp } = await getOTP(data.order_reference);
             if (otp) {
-              // Save OTP to DB and update local state
-              const supabase = getSupabaseClient();
               await supabase
                 .from('orders')
                 .update({ otp, status: 'completed' })
@@ -94,7 +86,7 @@ export default function NumberDisplayScreen() {
               await sendOTPReceivedNotification(data.project_name || 'Platform', otp);
             }
           } catch {
-            // Silently ignore OTP poll errors
+            // Silently continue
           }
         }
       }
@@ -116,26 +108,58 @@ export default function NumberDisplayScreen() {
     }, 1000);
   };
 
-  const copyToClipboard = async (text: string, type: 'number' | 'otp') => {
+  const handleRequestOTP = async () => {
+    if (!order?.order_reference) return;
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setRequestingOTP(true);
+    try {
+      const { otp } = await getOTP(order.order_reference);
+      if (otp) {
+        await supabase.from('orders').update({ otp, status: 'completed' }).eq('id', order_id);
+        setOrder((prev) => prev ? { ...prev, otp, status: 'completed' } : prev);
+        clearInterval(pollRef.current!);
+        clearInterval(timerRef.current!);
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        await sendOTPReceivedNotification(order.project_name || 'Platform', otp);
+      } else {
+        setOtpRequested(true);
+        startPolling();
+      }
+    } catch {
+      setOtpRequested(true);
+      startPolling();
+    } finally {
+      setRequestingOTP(false);
+    }
+  };
+
+  const copyToClipboard = async (text: string, type: 'number' | 'otp' | 'ref') => {
     Clipboard.setString(text);
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (type === 'number') {
-      setCopiedNumber(true);
-      setTimeout(() => setCopiedNumber(false), 2000);
-    } else {
-      setCopiedOTP(true);
-      setTimeout(() => setCopiedOTP(false), 2000);
-    }
+    if (type === 'number') { setCopiedNumber(true); setTimeout(() => setCopiedNumber(false), 2000); }
+    else if (type === 'otp') { setCopiedOTP(true); setTimeout(() => setCopiedOTP(false), 2000); }
+    else { setCopiedRef(true); setTimeout(() => setCopiedRef(false), 2000); }
   };
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${String(m).padStart(2, '0')}m : ${String(s).padStart(2, '0')}s`;
+  };
+
+  const formatDate = (dateStr?: string) => {
+    if (!dateStr) return '-';
+    const d = new Date(dateStr);
+    return d.toLocaleString('en-NG', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: true,
+    });
   };
 
   const otpReceived = !!(order?.otp || order?.status === 'completed');
-  const progressPct = Math.max(0, (timeLeft / (OTP_TIMEOUT / 1000)) * 100);
+  const statusColor = otpReceived ? Colors.success : expired ? Colors.error : '#F59E0B';
+  const statusLabel = otpReceived ? 'Completed' : expired ? 'Expired' : 'Pending';
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -152,7 +176,7 @@ export default function NumberDisplayScreen() {
         >
           <MaterialIcons name="arrow-back" size={22} color={Colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Your Number</Text>
+        <Text style={styles.headerTitle}>SMS Verification</Text>
         <View style={{ width: 36 }} />
       </View>
 
@@ -160,126 +184,202 @@ export default function NumberDisplayScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}
       >
-        {/* Platform info */}
-        {order && (
-          <View style={styles.platformRow}>
-            <MaterialIcons name="phone-android" size={20} color={Colors.primary} />
-            <Text style={styles.platformText}>{order.project_name} — {order.country_name}</Text>
+        {/* Main card */}
+        <View style={styles.card}>
+          {/* Service title */}
+          <View style={styles.serviceHeader}>
+            <View style={styles.serviceIconWrap}>
+              <MaterialIcons name="phone-android" size={28} color={Colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.serviceTitle}>
+                {order ? `${order.project_name} — ${order.country_name} SMS Verification` : 'Loading...'}
+              </Text>
+              {otpReceived && (
+                <Text style={styles.successSub}>
+                  OTP received successfully
+                </Text>
+              )}
+            </View>
           </View>
-        )}
 
-        {/* Phone number card */}
-        <View style={styles.numberCard}>
-          <Text style={styles.numberLabel}>Your Temporary Number</Text>
-          {order?.phone_number ? (
-            <>
-              <Animated.Text style={[styles.phoneNumber, { transform: [{ scale: pulseAnim }] }]}>
-                {order.phone_number}
-              </Animated.Text>
+          <View style={styles.divider} />
+
+          {/* Mobile Number row */}
+          <View style={styles.dataRow}>
+            <Text style={styles.dataLabel}>Mobile Number</Text>
+            {order?.phone_number ? (
               <TouchableOpacity
-                style={[styles.copyBtn, copiedNumber && styles.copyBtnDone]}
+                style={styles.valueWithCopy}
                 onPress={() => copyToClipboard(order.phone_number!, 'number')}
-                activeOpacity={0.8}
+                activeOpacity={0.7}
               >
+                <Text style={styles.phoneValue}>{order.phone_number}</Text>
                 <MaterialIcons
-                  name={copiedNumber ? "check" : "content-copy"}
+                  name={copiedNumber ? 'check' : 'content-copy'}
                   size={16}
-                  color={copiedNumber ? Colors.black : Colors.text}
+                  color={copiedNumber ? Colors.success : Colors.primary}
                 />
-                <Text style={[styles.copyText, copiedNumber && styles.copyTextDone]}>
-                  {copiedNumber ? "Copied!" : "Copy Number"}
-                </Text>
               </TouchableOpacity>
-            </>
-          ) : (
-            <View style={styles.loading}>
-              <MaterialIcons name="hourglass-empty" size={32} color={Colors.textMuted} />
-              <Text style={styles.loadingText}>Assigning your number...</Text>
-            </View>
-          )}
-        </View>
-
-        {/* OTP section */}
-        <View style={styles.otpCard}>
-          {otpReceived ? (
-            <>
-              <View style={styles.otpSuccess}>
-                <MaterialIcons name="check-circle" size={32} color={Colors.success} />
-                <Text style={styles.otpSuccessLabel}>OTP Received!</Text>
+            ) : (
+              <View style={styles.loadingRow}>
+                <ActivityIndicator size="small" color={Colors.primary} />
+                <Text style={styles.loadingLabel}>Assigning...</Text>
               </View>
-              <Text style={styles.otpCode}>{order?.otp}</Text>
-              <TouchableOpacity
-                style={[styles.copyBtn, styles.copyBtnOtp, copiedOTP && styles.copyBtnDone]}
-                onPress={() => order?.otp && copyToClipboard(order.otp, 'otp')}
-                activeOpacity={0.8}
-              >
-                <MaterialIcons
-                  name={copiedOTP ? "check" : "content-copy"}
-                  size={16}
-                  color={copiedOTP ? Colors.black : Colors.primary}
-                />
-                <Text style={[styles.copyText, styles.copyTextOtp, copiedOTP && styles.copyTextDone]}>
-                  {copiedOTP ? "Copied!" : "Copy OTP"}
+            )}
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Request OTP button - shown only when not yet received and not expired */}
+          {!otpReceived && !expired && (
+            <TouchableOpacity
+              style={[styles.requestOtpBtn, (requestingOTP || !order?.phone_number) && styles.requestOtpBtnDisabled]}
+              onPress={handleRequestOTP}
+              disabled={requestingOTP || !order?.phone_number}
+              activeOpacity={0.85}
+            >
+              {requestingOTP ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.requestOtpText}>
+                  {otpRequested ? 'Refresh OTP/SMS' : 'Request OTP/SMS'}
                 </Text>
-              </TouchableOpacity>
-            </>
-          ) : expired ? (
+              )}
+            </TouchableOpacity>
+          )}
+
+          {/* SMS Inbox */}
+          <View style={styles.smsInboxRow}>
+            <View style={{ marginBottom: 6 }}>
+              <Text style={styles.dataLabel}>SMS Inbox Message</Text>
+            </View>
+            <View style={styles.smsInboxField}>
+              {otpReceived && order?.otp ? (
+                <>
+                  <Text style={styles.otpValue}>{order.otp}</Text>
+                  <TouchableOpacity
+                    style={styles.copyIconBtn}
+                    onPress={() => copyToClipboard(order.otp!, 'otp')}
+                    activeOpacity={0.8}
+                  >
+                    <MaterialIcons
+                      name={copiedOTP ? 'check' : 'content-copy'}
+                      size={18}
+                      color="#FFFFFF"
+                    />
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.waitingText}>
+                    {expired ? 'OTP not received' : 'Waiting for OTP...'}
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.copyIconBtn, styles.refreshBtn]}
+                    onPress={handleRequestOTP}
+                    disabled={requestingOTP || expired || !order?.phone_number}
+                    activeOpacity={0.8}
+                  >
+                    {requestingOTP ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <MaterialIcons name="refresh" size={18} color="#FFFFFF" />
+                    )}
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          </View>
+
+          {/* NB notice */}
+          <View style={styles.nbRow}>
+            <Text style={styles.nbLabel}>NB : </Text>
+            <Text style={styles.nbText}>
+              You will be refunded automatically if you do not receive any OTP after 5 minutes
+            </Text>
+          </View>
+
+          {/* Timer - shown while waiting */}
+          {!otpReceived && !expired && (
+            <Text style={styles.timerText}>{formatTime(timeLeft)}</Text>
+          )}
+
+          {expired && !otpReceived && (
             <View style={styles.expiredBox}>
-              <MaterialIcons name="schedule" size={32} color={Colors.error} />
-              <Text style={styles.expiredTitle}>OTP Not Received</Text>
-              <Text style={styles.expiredText}>
-                The 2-minute window has expired. Please contact support — we will process a refund for you.
-              </Text>
-              <TouchableOpacity
-                style={styles.supportBtn}
-                onPress={async () => {
-                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                  showAlert('Contact Support', 'Please email support@numvault.ng with your order ID: ' + order_id);
-                }}
-                activeOpacity={0.8}
-              >
-                <MaterialIcons name="support-agent" size={16} color={Colors.black} />
-                <Text style={styles.supportBtnText}>Contact Support</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <View style={styles.waitingBox}>
-              <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-                <MaterialIcons name="sms" size={32} color={Colors.primary} />
-              </Animated.View>
-              <Text style={styles.waitingTitle}>Waiting for your OTP...</Text>
-              <Text style={styles.waitingText}>
-                Enter the number above on {order?.project_name || 'the platform'} and request an OTP. It will appear here automatically.
-              </Text>
-
-              {/* Timer */}
-              <View style={styles.timerBox}>
-                <View style={[styles.timerBar, { width: `${progressPct}%` as any }]} />
-                <Text style={[styles.timerText, timeLeft < 30 && { color: Colors.error }]}>
-                  {formatTime(timeLeft)}
-                </Text>
-              </View>
+              <MaterialIcons name="schedule" size={18} color={Colors.error} />
+              <Text style={styles.expiredText}>Window expired. Contact support for a refund.</Text>
             </View>
           )}
+
+          <View style={styles.divider} />
+
+          {/* Reference */}
+          <View style={styles.dataRow}>
+            <Text style={styles.dataLabel}>Reference</Text>
+            {order?.order_reference ? (
+              <TouchableOpacity
+                style={styles.valueWithCopy}
+                onPress={() => copyToClipboard(order.order_reference!, 'ref')}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.refValue} numberOfLines={1} ellipsizeMode="middle">
+                  {order.order_reference}
+                </Text>
+                <MaterialIcons
+                  name={copiedRef ? 'check' : 'content-copy'}
+                  size={15}
+                  color={copiedRef ? Colors.success : Colors.textSecondary}
+                />
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.dataValue}>-</Text>
+            )}
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Amount Paid */}
+          <View style={styles.dataRow}>
+            <Text style={styles.dataLabel}>Amount Paid</Text>
+            <Text style={styles.dataValue}>
+              ₦{order ? Number(order.amount_paid).toLocaleString('en-NG', { minimumFractionDigits: 2 }) : '-'}
+            </Text>
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Order Status */}
+          <View style={styles.dataRow}>
+            <Text style={styles.dataLabel}>Order Status</Text>
+            <View style={[styles.statusPill, { backgroundColor: statusColor }]}>
+              <Text style={styles.statusText}>{statusLabel}</Text>
+            </View>
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Order Date */}
+          <View style={styles.dataRow}>
+            <Text style={styles.dataLabel}>Order Date</Text>
+            <Text style={styles.dataValueSm}>{formatDate(order?.created_at)}</Text>
+          </View>
         </View>
 
-        {/* Instructions */}
-        <View style={styles.instructions}>
-          <Text style={styles.instructTitle}>How to use this number</Text>
-          {[
-            { icon: 'content-copy', text: `Copy the number above` },
-            { icon: 'open-in-new', text: `Open ${order?.project_name || 'the app'} and enter it as your phone number` },
-            { icon: 'sms', text: `Request an SMS verification code` },
-            { icon: 'auto-awesome', text: `Your OTP will appear here automatically within 2 minutes` },
-          ].map((step, i) => (
-            <View key={i} style={styles.instructRow}>
-              <View style={styles.instructIcon}>
-                <MaterialIcons name={step.icon as any} size={14} color={Colors.primary} />
-              </View>
-              <Text style={styles.instructText}>{step.text}</Text>
-            </View>
-          ))}
-        </View>
+        {/* Support button when expired */}
+        {expired && !otpReceived && (
+          <TouchableOpacity
+            style={styles.supportBtn}
+            onPress={async () => {
+              await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              showAlert('Contact Support', 'Email support@numvault.ng with your Order ID: ' + order_id);
+            }}
+            activeOpacity={0.8}
+          >
+            <MaterialIcons name="support-agent" size={16} color={Colors.black} />
+            <Text style={styles.supportBtnText}>Contact Support</Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           style={styles.viewOrdersBtn}
@@ -307,148 +407,211 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.md,
+    width: 36, height: 36, borderRadius: Radius.md,
     backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
   headerTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semibold },
   content: { padding: Spacing.lg, gap: Spacing.lg },
-  platformRow: {
+
+  // Card
+  card: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    overflow: 'hidden',
+  },
+
+  // Service header
+  serviceHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
+    alignItems: 'flex-start',
+    gap: Spacing.md,
+    padding: Spacing.lg,
+  },
+  serviceIconWrap: {
+    width: 44, height: 44,
+    borderRadius: Radius.md,
     backgroundColor: Colors.primaryMuted,
-    borderRadius: Radius.full,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    alignSelf: 'flex-start',
+    alignItems: 'center', justifyContent: 'center',
   },
-  platformText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
-  numberCard: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-    borderRadius: Radius.xl,
-    padding: Spacing.xl,
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  numberLabel: { color: Colors.textSecondary, fontSize: FontSize.sm },
-  phoneNumber: {
+  serviceTitle: {
     color: Colors.text,
-    fontSize: FontSize.xxxl,
+    fontSize: FontSize.md,
     fontWeight: FontWeight.bold,
-    letterSpacing: 2,
-    textAlign: 'center',
+    lineHeight: 22,
   },
-  copyBtn: {
+  successSub: {
+    color: Colors.success,
+    fontSize: FontSize.xs,
+    marginTop: 4,
+    fontWeight: FontWeight.medium,
+  },
+
+  divider: { height: 1, backgroundColor: Colors.surfaceBorder, marginHorizontal: Spacing.lg },
+
+  // Data rows
+  dataRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.full,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: Colors.surfaceElevated,
-  },
-  copyBtnOtp: { borderColor: Colors.primary, backgroundColor: Colors.primaryMuted },
-  copyBtnDone: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  copyText: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  copyTextOtp: { color: Colors.primary },
-  copyTextDone: { color: Colors.black },
-  loading: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.md },
-  loadingText: { color: Colors.textSecondary, fontSize: FontSize.sm },
-  otpCard: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.xl,
-    padding: Spacing.xl,
-    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 14,
     gap: Spacing.md,
   },
-  otpSuccess: { alignItems: 'center', gap: Spacing.sm },
-  otpSuccessLabel: { color: Colors.success, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  otpCode: {
-    color: Colors.primary,
-    fontSize: 48,
-    fontWeight: FontWeight.bold,
-    letterSpacing: 8,
-  },
-  waitingBox: { alignItems: 'center', gap: Spacing.md, width: '100%' },
-  waitingTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  waitingText: {
+  dataLabel: {
     color: Colors.textSecondary,
     fontSize: FontSize.sm,
-    lineHeight: 22,
-    textAlign: 'center',
+    fontWeight: FontWeight.medium,
+    flex: 1,
   },
-  timerBox: {
-    width: '100%',
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full,
-    height: 36,
-    overflow: 'hidden',
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
+  dataValue: {
+    color: Colors.text,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    textAlign: 'right',
   },
-  timerBar: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: Colors.primaryMuted,
-    borderRadius: Radius.full,
+  dataValueSm: {
+    color: Colors.text,
+    fontSize: 11,
+    fontWeight: FontWeight.medium,
+    textAlign: 'right',
+    flex: 1.5,
   },
-  timerText: {
+  phoneValue: {
     color: Colors.primary,
     fontSize: FontSize.md,
     fontWeight: FontWeight.bold,
-    zIndex: 1,
+    marginRight: 6,
   },
-  expiredBox: { alignItems: 'center', gap: Spacing.md },
-  expiredTitle: { color: Colors.error, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
-  expiredText: {
-    color: Colors.textSecondary,
+  refValue: {
+    color: Colors.text,
+    fontSize: 11,
+    fontWeight: FontWeight.medium,
+    flex: 1,
+    marginRight: 6,
+  },
+  valueWithCopy: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flex: 1.5,
+    justifyContent: 'flex-end',
+  },
+  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  loadingLabel: { color: Colors.textSecondary, fontSize: FontSize.sm },
+
+  // Request OTP button
+  requestOtpBtn: {
+    backgroundColor: Colors.primary,
+    marginHorizontal: Spacing.lg,
+    marginVertical: Spacing.md,
+    height: 50,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  requestOtpBtnDisabled: { opacity: 0.5 },
+  requestOtpText: { color: Colors.black, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+
+  // SMS Inbox
+  smsInboxRow: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 14,
+  },
+  smsInboxField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.md,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+  },
+  otpValue: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: FontSize.xl,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 4,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
+  },
+  waitingText: {
+    flex: 1,
+    color: Colors.textMuted,
     fontSize: FontSize.sm,
-    lineHeight: 22,
-    textAlign: 'center',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
+    fontStyle: 'italic',
   },
+  copyIconBtn: {
+    width: 52,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+  },
+  refreshBtn: { backgroundColor: Colors.surfaceBorder },
+
+  // NB notice
+  nbRow: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: 14,
+    gap: 4,
+  },
+  nbLabel: { color: Colors.error, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
+  nbText: {
+    flex: 1,
+    color: Colors.textSecondary,
+    fontSize: FontSize.xs,
+    lineHeight: 18,
+  },
+
+  // Timer
+  timerText: {
+    color: Colors.text,
+    fontSize: 22,
+    fontWeight: FontWeight.bold,
+    textAlign: 'center',
+    paddingBottom: Spacing.md,
+    letterSpacing: 2,
+  },
+
+  // Status pill
+  statusPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: Radius.full,
+  },
+  statusText: { color: '#FFFFFF', fontSize: FontSize.xs, fontWeight: FontWeight.bold },
+
+  // Expired
+  expiredBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.errorMuted,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+  },
+  expiredText: { flex: 1, color: Colors.error, fontSize: FontSize.xs, lineHeight: 18 },
+
   supportBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
+    gap: 8,
     backgroundColor: Colors.error,
     borderRadius: Radius.md,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    height: 48,
   },
   supportBtnText: { color: Colors.black, fontWeight: FontWeight.bold, fontSize: FontSize.sm },
-  instructions: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    gap: Spacing.md,
-  },
-  instructTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  instructRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
-  instructIcon: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: Colors.primaryMuted,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  instructText: { flex: 1, color: Colors.textSecondary, fontSize: FontSize.sm, lineHeight: 22 },
+
   viewOrdersBtn: {
     flexDirection: 'row',
     alignItems: 'center',

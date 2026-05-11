@@ -70,14 +70,16 @@ export async function getPackages(providerCode: string, countryCode: number): Pr
   return packages;
 }
 
-// Polls OTP using the reference from the buy endpoint
+/**
+ * Calls GET /request/sms/verification/{reference}/otp
+ * This both triggers and retrieves the OTP.
+ * OTP is embedded in the message: "Your OTP (0891) has been successfully received"
+ */
 export async function getOTP(reference: string): Promise<{ otp: string | null; mobile_number: string | null }> {
   try {
     const data = await sociallyProxy(`/request/sms/verification/${reference}/otp`);
-    // Response: { status, message, data: { mobile_number } }
-    // OTP is embedded in the message: "Your OTP (0891) has been successfully received"
     const message: string = data?.message || '';
-    const otpMatch = message.match(/\((\d+)\)/);
+    const otpMatch = message.match(/\((\d{4,8})\)/);
     const otp = otpMatch ? otpMatch[1] : null;
     const mobileNumber = data?.data?.mobile_number || null;
     return { otp, mobile_number: mobileNumber };
