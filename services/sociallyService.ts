@@ -104,20 +104,30 @@ async function sociallyProxy(path: string, method = 'GET', body?: Record<string,
 
 export async function getProviders(): Promise<Provider[]> {
   const data = await sociallyProxy('/sms/verification/providers');
-  return data?.data || [];
+  // API returns { providers: [...] }
+  const raw: any[] =
+    Array.isArray(data?.providers) ? data.providers :
+    Array.isArray(data?.data) ? data.data :
+    Array.isArray(data) ? data : [];
+  return raw.map((p: any) => ({
+    provider_code: String(p.provider_code ?? p.code ?? p.id ?? ''),
+    provider_name: String(p.provider_name ?? p.name ?? p.title ?? ''),
+  })).filter((p) => p.provider_code !== '');
 }
 
 export async function getCountries(providerCode: string): Promise<Country[]> {
   const data = await sociallyProxy(`/sms/verification/provider/${providerCode}/countries`);
-  // API may return array directly OR under data key
-  const raw: any[] = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+  // API returns { countries: [...] }; fall back to data.data or bare array
+  const raw: any[] =
+    Array.isArray(data?.countries) ? data.countries :
+    Array.isArray(data?.data) ? data.data :
+    Array.isArray(data) ? data : [];
   return raw
     .filter((item: any) => item && (item.country_code !== undefined || item.id !== undefined))
     .map((item: any) => ({
-      // Prefer numeric id as country_code for Server A, fallback to country_code field
       country_code: String(item.country_code ?? item.id ?? ''),
       title: item.title || item.name || item.country_name || String(item.country_code ?? item.id ?? ''),
-      code: item.code || item.iso_code || item.flag_code || String(item.country_code ?? item.id ?? ''),
+      code: item.code || item.iso_code || item.flag_code || '',
     }))
     .filter((c) => c.country_code !== '');
 }
@@ -134,13 +144,12 @@ export async function getPackages(providerCode: string, countryCode: string): Pr
     country_code: countryCode,
   });
 
-  // API may return array directly OR under data/packages/result key
+  // API returns { packages: [...] }; fall back to data.data or bare array
   const raw: any[] =
-    Array.isArray(data) ? data :
-    Array.isArray(data?.data) ? data.data :
     Array.isArray(data?.packages) ? data.packages :
+    Array.isArray(data?.data) ? data.data :
     Array.isArray(data?.result) ? data.result :
-    [];
+    Array.isArray(data) ? data : [];
 
   const packages: Package[] = raw
     .filter((pkg: any) => pkg && (pkg.project_code || pkg.project_name))

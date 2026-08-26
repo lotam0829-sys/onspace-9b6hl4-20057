@@ -382,7 +382,7 @@ export default function HomeScreen() {
                     style={styles.searchInput}
                     value={countrySearch}
                     onChangeText={setCountrySearch}
-                    placeholder="Search countries..."
+                    placeholder={provider === 'server-b' ? 'Search services...' : 'Search countries...'}
                     placeholderTextColor={Colors.textMuted}
                   />
                   {countrySearch.length > 0 && (
@@ -403,7 +403,9 @@ export default function HomeScreen() {
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={{ paddingBottom: insets.bottom + 32, paddingTop: Spacing.xs }}
                   ListHeaderComponent={
-                    <Text style={styles.resultsCount}>{filteredCountries.length} countries</Text>
+                    <Text style={styles.resultsCount}>
+                        {filteredCountries.length} {provider === 'server-b' ? 'services' : 'countries'}
+                      </Text>
                   }
                   renderItem={({ item }) => {
                     const active = selectedCountry?.country_code === item.country_code;

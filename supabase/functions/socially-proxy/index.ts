@@ -52,13 +52,9 @@ Deno.serve(async (req: Request) => {
     let fetchOptions: RequestInit = { method, headers };
 
     if (body && (method === 'POST' || method === 'PUT')) {
-      const form = new FormData();
-      for (const [key, value] of Object.entries(body)) {
-        if (value !== undefined && value !== null) {
-          form.append(key, String(value));
-        }
-      }
-      fetchOptions.body = form;
+      // Send as JSON — Socially.ng accepts application/json for POST endpoints
+      headers['Content-Type'] = 'application/json';
+      fetchOptions.body = JSON.stringify(body);
     }
 
     const url = path.startsWith('http') ? path : `${SOCIALLY_BASE}${path}`;
