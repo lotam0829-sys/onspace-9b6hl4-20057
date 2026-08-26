@@ -168,39 +168,37 @@ export async function getPackages(providerCode: string, countryCode: string): Pr
 }
 
 /**
- * For Server B: loads ALL services (country list IS the service list) with pre-fetched prices.
- * Batch-fetches packages in parallel, returns only items with a valid price > 0.
+ * Load just the service list for a provider — NO price fetching.
+ * Fast single API call. Prices are lazy-loaded per service on demand.
  */
-export async function getServicesWithPrices(providerCode: string): Promise<ServiceItem[]> {
+export async function getServiceList(providerCode: string): Promise<ServiceItem[]> {
   const countries = await getCountries(providerCode);
+  return countries.map((c) => ({
+    country_code: c.country_code,
+    title: c.title,
+    code: c.code,
+    package: { country_code: c.country_code, project_code: '', project_name: '', price: 0, displayPrice: 0 },
+    category: detectCategory(c.title),
+  }));
+}
 
-  const BATCH = 20;
-  const results: ServiceItem[] = [];
-
-  for (let i = 0; i < countries.length; i += BATCH) {
-    const batch = countries.slice(i, i + BATCH);
-    const settled = await Promise.allSettled(
-      batch.map((country) => getPackages(providerCode, country.country_code))
-    );
-
-    settled.forEach((result, idx) => {
-      const country = batch[idx];
-      if (result.status === 'fulfilled') {
-        const pkgs = result.value.filter((p) => p.price > 0 && p.displayPrice > 0);
-        if (pkgs.length > 0) {
-          results.push({
-            country_code: country.country_code,
-            title: country.title,
-            code: country.code,
-            package: pkgs[0],
-            category: detectCategory(country.title),
-          });
-        }
-      }
-    });
+/**
+ * Fetch the price for a single service on demand.
+ * Returns null if no pricing available.
+ */
+export async function getServicePrice(providerCode: string, countryCode: string): Promise<Package | null> {
+  try {
+    const pkgs = await getPackages(providerCode, countryCode);
+    const valid = pkgs.filter((p) => p.price > 0 && p.displayPrice > 0);
+    return valid.length > 0 ? valid[0] : null;
+  } catch {
+    return null;
   }
+}
 
-  return results;
+/** @deprecated Use getServiceList + getServicePrice instead — eager-loading 2000+ prices times out. */
+export async function getServicesWithPrices(providerCode: string): Promise<ServiceItem[]> {
+  return getServiceList(providerCode);
 }
 
 /**

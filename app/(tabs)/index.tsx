@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/template';
 import {
-  getServicesWithPrices, getCountries, getPackagesForCountry,
+  getServiceList, getServicePrice, getCountries, getPackagesForCountry,
   ServiceItem, ServiceCategory, Country, Package,
 } from '@/services/sociallyService';
 import { PLATFORM_ICONS } from '@/constants/config';
@@ -45,13 +45,16 @@ export default function HomeScreen() {
 
   const [provider, setProvider] = useState<ProviderCode>('server-b');
 
-  // Server B state (pre-loaded services list)
+  // Server B state
   const [allServices, setAllServices] = useState<ServiceItem[]>([]);
   const [loadingServices, setLoadingServices] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [loadProgress, setLoadProgress] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<ServiceCategory>('All');
+  // Lazy price cache: country_code → Package | null
+  const priceCache = useRef<Map<string, Package | null>>(new Map());
+  const [fetchingPrice, setFetchingPrice] = useState(false);
+  const [sheetPriceReady, setSheetPriceReady] = useState(false);
 
   // Server A state (two-step: country → platform)
   const [serverACountries, setServerACountries] = useState<Country[]>([]);
@@ -90,14 +93,11 @@ export default function HomeScreen() {
   // ══ Server B ══════════════════════════════════════════════════════════════
 
   const loadServerBServices = async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    else { setLoadingServices(true); setLoadProgress(0); }
+    if (isRefresh) { setRefreshing(true); priceCache.current.clear(); }
+    else setLoadingServices(true);
 
     try {
-      const timer = setInterval(() => setLoadProgress((p) => Math.min(p + 0.04, 0.85)), 400);
-      const items = await getServicesWithPrices('server-b');
-      clearInterval(timer);
-      setLoadProgress(1);
+      const items = await getServiceList('server-b');
       setAllServices(items);
     } catch (e) {
       console.error('Failed to load Server B services:', e);
@@ -165,7 +165,32 @@ export default function HomeScreen() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSheetService(svc);
     setSheetPackage(null);
+    setSheetPriceReady(false);
     Animated.spring(sheetAnim, { toValue: 1, useNativeDriver: true, tension: 65, friction: 11 }).start();
+
+    // Lazy-load price if not cached
+    const cached = priceCache.current.get(svc.country_code);
+    if (cached !== undefined) {
+      // Already fetched (even if null)
+      setSheetService((prev) => prev ? { ...prev, package: cached ?? prev.package } : prev);
+      setSheetPriceReady(true);
+      return;
+    }
+    setFetchingPrice(true);
+    try {
+      const pkg = await getServicePrice('server-b', svc.country_code);
+      priceCache.current.set(svc.country_code, pkg);
+      setSheetService((prev) => prev && prev.country_code === svc.country_code
+        ? { ...prev, package: pkg ?? prev.package }
+        : prev
+      );
+      setSheetPriceReady(true);
+    } catch {
+      priceCache.current.set(svc.country_code, null);
+      setSheetPriceReady(true);
+    } finally {
+      setFetchingPrice(false);
+    }
   };
 
   const openSheetPackage = async (country: Country, pkg: Package) => {
@@ -212,8 +237,11 @@ export default function HomeScreen() {
   };
 
   const sheetTranslateY = sheetAnim.interpolate({ inputRange: [0, 1], outputRange: [600, 0] });
+  const sheetPrice = sheetService ? (sheetService.package.displayPrice || 0) : sheetPackage ? sheetPackage.pkg.displayPrice : 0;
+  const sheetHasPrice = sheetPrice > 0;
+
   const sheetData = sheetService
-    ? { title: sheetService.title, price: sheetService.package.displayPrice, category: sheetService.category, provider: 'Server B' }
+    ? { title: sheetService.title, price: sheetPrice, category: sheetService.category, provider: 'Server B' }
     : sheetPackage
     ? { title: `${sheetPackage.pkg.project_name} — ${sheetPackage.country.title}`, price: sheetPackage.pkg.displayPrice, category: null, provider: 'Server A' }
     : null;
@@ -286,13 +314,7 @@ export default function HomeScreen() {
               <View style={styles.loadingCard}>
                 <ActivityIndicator color={Colors.primary} size="large" />
                 <Text style={styles.loadingTitle}>Loading services...</Text>
-                <Text style={styles.loadingSubtitle}>Fetching available prices from Server B</Text>
-                <View style={styles.progressTrack}>
-                  <View style={[styles.progressFill, { width: `${Math.round(loadProgress * 100)}%` }]} />
-                </View>
-                <Text style={styles.progressLabel}>
-                  {loadProgress < 1 ? `${Math.round(loadProgress * 100)}% — filtering unavailable...` : 'Almost done...'}
-                </Text>
+                <Text style={styles.loadingSubtitle}>Fetching service list from Server B</Text>
               </View>
             </View>
           ) : (
@@ -529,13 +551,31 @@ export default function HomeScreen() {
               ))}
               <View style={[styles.sheetRow, styles.sheetPriceRow]}>
                 <Text style={styles.sheetPriceLabel}>Total</Text>
-                <Text style={styles.sheetPrice}>₦{sheetData.price.toLocaleString()}</Text>
+                {fetchingPrice
+                  ? <ActivityIndicator color={Colors.primary} size="small" />
+                  : <Text style={sheetHasPrice ? styles.sheetPrice : styles.sheetPriceLoading}>
+                      {sheetHasPrice ? `₦${sheetData.price.toLocaleString()}` : 'Not available'}
+                    </Text>
+                }
               </View>
             </View>
 
-            <TouchableOpacity style={styles.sheetPayBtn} onPress={proceedToCheckout} activeOpacity={0.88}>
-              <MaterialIcons name="lock" size={16} color={Colors.black} />
-              <Text style={styles.sheetPayBtnText}>Pay ₦{sheetData.price.toLocaleString()}</Text>
+            <TouchableOpacity
+              style={[styles.sheetPayBtn, (!sheetHasPrice || fetchingPrice) && styles.sheetPayBtnDisabled]}
+              onPress={proceedToCheckout}
+              disabled={!sheetHasPrice || fetchingPrice}
+              activeOpacity={0.88}
+            >
+              {fetchingPrice ? (
+                <ActivityIndicator color={Colors.black} size="small" />
+              ) : (
+                <>
+                  <MaterialIcons name="lock" size={16} color={Colors.black} />
+                  <Text style={styles.sheetPayBtnText}>
+                    {sheetHasPrice ? `Pay ₦${sheetData.price.toLocaleString()}` : 'Price unavailable'}
+                  </Text>
+                </>
+              )}
             </TouchableOpacity>
             <TouchableOpacity style={styles.sheetCancelBtn} onPress={closeSheet}>
               <Text style={styles.sheetCancelText}>Cancel</Text>
@@ -664,13 +704,6 @@ const styles = StyleSheet.create({
   },
   loadingTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   loadingSubtitle: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center' },
-  progressTrack: {
-    height: 6, width: '100%', backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full, overflow: 'hidden',
-  },
-  progressFill: { height: '100%', backgroundColor: Colors.primary, borderRadius: Radius.full },
-  progressLabel: { color: Colors.textMuted, fontSize: 11, textAlign: 'center' },
-
   // Category chips
   categoryRow: {
     paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md, gap: Spacing.sm,
@@ -835,11 +868,13 @@ const styles = StyleSheet.create({
   },
   sheetPriceLabel: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
   sheetPrice: { color: Colors.primary, fontSize: FontSize.xxl, fontWeight: FontWeight.bold },
+  sheetPriceLoading: { color: Colors.textMuted, fontSize: FontSize.md, fontStyle: 'italic' },
 
   sheetPayBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
     backgroundColor: Colors.primary, borderRadius: Radius.md, height: 54, marginBottom: Spacing.sm,
   },
+  sheetPayBtnDisabled: { opacity: 0.5 },
   sheetPayBtnText: { color: Colors.black, fontSize: FontSize.md, fontWeight: FontWeight.bold },
   sheetCancelBtn: { alignItems: 'center', paddingVertical: Spacing.sm },
   sheetCancelText: { color: Colors.textSecondary, fontSize: FontSize.sm },
