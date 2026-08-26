@@ -24,7 +24,9 @@ non-null.
 
 ```bash
 cd workers/vibe-socially-sms-mcp
-wrangler secret put SOCIALLY_BEARER_TOKEN
+wrangler secret put NUMVAULT_TOKEN
+# optional — only needed if the base URL ever changes:
+wrangler secret put NUMVAULT_BASE_URL
 wrangler deploy
 ```
 

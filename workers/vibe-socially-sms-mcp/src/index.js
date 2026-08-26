@@ -11,7 +11,7 @@
 // query param called `order_id`.
 
 const PROTOCOL_VERSION = "2024-11-05";
-const API_BASE = "https://socially.ng/api/v1";
+const DEFAULT_API_BASE = "https://socially.ng/api/v1";
 
 const TOOLS = [
   {
@@ -169,12 +169,13 @@ export default {
 // --- Shared request helper -------------------------------------------------
 
 async function sociallyRequest(env, path, { method = "GET", query, body } = {}) {
-  const token = env.SOCIALLY_BEARER_TOKEN;
+  const token = env.NUMVAULT_TOKEN;
   if (!token) {
-    throw new Error("Missing SOCIALLY_BEARER_TOKEN secret in Worker environment");
+    throw new Error("Missing NUMVAULT_TOKEN secret in Worker environment");
   }
+  const apiBase = env.NUMVAULT_BASE_URL || DEFAULT_API_BASE;
 
-  let url = `${API_BASE}${path}`;
+  let url = `${apiBase}${path}`;
   if (query) {
     const qs = new URLSearchParams(query).toString();
     if (qs) url += `?${qs}`;

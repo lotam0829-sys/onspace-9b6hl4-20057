@@ -3,7 +3,8 @@ main = "src/index.js"
 compatibility_date = "2026-08-25"
 
 # Secrets (set via CLI, never commit these):
-#   wrangler secret put SOCIALLY_BEARER_TOKEN
+#   wrangler secret put NUMVAULT_TOKEN       (Socially.ng bearer token)
+#   wrangler secret put NUMVAULT_BASE_URL    (optional; defaults to https://socially.ng/api/v1)
 #
 # This worker expects Authorization: Bearer <token> per the SMS Verification
 # module docs — separate from the SOCIALLY_API_KEY used by vibe-socially-mcp
