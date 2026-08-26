@@ -30,5 +30,5 @@ export const PLATFORM_ICONS: Record<string, string> = {
   Amazon: "shopping-cart",
 };
 
-export const OTP_POLL_INTERVAL = 5000; // 5 seconds
-export const OTP_TIMEOUT = 120000; // 120 seconds
+export const OTP_POLL_INTERVAL = 5000;  // 5 seconds
+export const OTP_TIMEOUT = 600000;      // 10 minutes (numbers expire ~15 min)

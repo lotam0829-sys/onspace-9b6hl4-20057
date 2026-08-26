@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  StatusBar, TextInput, ActivityIndicator,
-  Animated, RefreshControl, FlatList,
+  StatusBar, TextInput, ActivityIndicator, Animated,
+  RefreshControl, FlatList, Modal,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -10,12 +10,20 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/template';
 import {
-  getServicesWithPrices, ServiceItem, ServiceCategory,
+  getServicesWithPrices, getCountries, getPackagesForCountry,
+  ServiceItem, ServiceCategory, Country, Package,
 } from '@/services/sociallyService';
 import { PLATFORM_ICONS } from '@/constants/config';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
-const DEFAULT_PROVIDER = 'server-b';
+// ── Providers ────────────────────────────────────────────────────────────────
+
+type ProviderCode = 'server-b' | 'server-a';
+
+const PROVIDERS: { code: ProviderCode; label: string; desc: string }[] = [
+  { code: 'server-b', label: 'Server B', desc: 'US-based services' },
+  { code: 'server-a', label: 'Server A', desc: 'Multi-country numbers' },
+];
 
 const CATEGORIES: ServiceCategory[] = ['All', 'Social', 'Messaging', 'Finance', 'Shopping', 'Other'];
 
@@ -28,52 +36,76 @@ const CATEGORY_ICONS: Record<ServiceCategory, string> = {
   Other: 'more-horiz',
 };
 
+// ── Main screen ──────────────────────────────────────────────────────────────
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
 
+  const [provider, setProvider] = useState<ProviderCode>('server-b');
+
+  // Server B state (pre-loaded services list)
   const [allServices, setAllServices] = useState<ServiceItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingServices, setLoadingServices] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<ServiceCategory>('All');
-  const [loadProgress, setLoadProgress] = useState(0);
 
-  // Bottom sheet
-  const [selectedService, setSelectedService] = useState<ServiceItem | null>(null);
+  // Server A state (two-step: country → platform)
+  const [serverACountries, setServerACountries] = useState<Country[]>([]);
+  const [loadingCountries, setLoadingCountries] = useState(false);
+  const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
+  const [countryPackages, setCountryPackages] = useState<Package[]>([]);
+  const [loadingPackages, setLoadingPackages] = useState(false);
+  const [countrySearch, setCountrySearch] = useState('');
+
+  // Bottom sheet (shared for Server B service preview + Server A package preview)
+  const [sheetService, setSheetService] = useState<ServiceItem | null>(null);
+  const [sheetPackage, setSheetPackage] = useState<{
+    country: Country;
+    pkg: Package;
+  } | null>(null);
   const sheetAnim = useRef(new Animated.Value(0)).current;
 
+  // ── Load on provider change ──
   useEffect(() => {
-    loadServices();
-  }, []);
+    setSearchQuery('');
+    setCountrySearch('');
+    setActiveCategory('All');
+    setSelectedCountry(null);
+    setCountryPackages([]);
+    setSheetService(null);
+    setSheetPackage(null);
 
-  const loadServices = async (isRefresh = false) => {
+    if (provider === 'server-b') {
+      loadServerBServices();
+    } else {
+      loadServerACountries();
+    }
+  }, [provider]);
+
+  // ══ Server B ══════════════════════════════════════════════════════════════
+
+  const loadServerBServices = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
-    else { setLoading(true); setLoadProgress(0); }
+    else { setLoadingServices(true); setLoadProgress(0); }
 
     try {
-      // Progress animation while loading
-      const progressTimer = setInterval(() => {
-        setLoadProgress((p) => Math.min(p + 0.04, 0.85));
-      }, 400);
-
-      const items = await getServicesWithPrices(DEFAULT_PROVIDER);
-
-      clearInterval(progressTimer);
+      const timer = setInterval(() => setLoadProgress((p) => Math.min(p + 0.04, 0.85)), 400);
+      const items = await getServicesWithPrices('server-b');
+      clearInterval(timer);
       setLoadProgress(1);
       setAllServices(items);
     } catch (e) {
-      console.error('Failed to load services:', e);
+      console.error('Failed to load Server B services:', e);
     } finally {
-      setLoading(false);
+      setLoadingServices(false);
       setRefreshing(false);
     }
   };
 
-  const onRefresh = () => loadServices(true);
-
-  // ── Filtered list ──
   const filteredServices = allServices.filter((s) => {
     const matchesSearch = s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       s.country_code.toLowerCase().includes(searchQuery.toLowerCase());
@@ -81,7 +113,6 @@ export default function HomeScreen() {
     return matchesSearch && matchesCategory;
   });
 
-  // Category counts
   const categoryCounts = CATEGORIES.reduce((acc, cat) => {
     acc[cat] = cat === 'All'
       ? allServices.length
@@ -89,47 +120,99 @@ export default function HomeScreen() {
     return acc;
   }, {} as Record<ServiceCategory, number>);
 
-  // ── Bottom sheet ──
-  const openSheet = async (service: ServiceItem) => {
+  // ══ Server A ══════════════════════════════════════════════════════════════
+
+  const loadServerACountries = async () => {
+    setLoadingCountries(true);
+    try {
+      const list = await getCountries('server-a');
+      setServerACountries(list);
+    } catch (e) {
+      console.error('Failed to load Server A countries:', e);
+    } finally {
+      setLoadingCountries(false);
+    }
+  };
+
+  const selectCountry = async (country: Country) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedCountry(country);
+    setCountryPackages([]);
+    setLoadingPackages(true);
+    try {
+      const pkgs = await getPackagesForCountry('server-a', country.country_code);
+      setCountryPackages(pkgs);
+    } catch (e) {
+      console.error('Failed to load packages:', e);
+    } finally {
+      setLoadingPackages(false);
+    }
+  };
+
+  const filteredCountries = serverACountries.filter((c) =>
+    c.title.toLowerCase().includes(countrySearch.toLowerCase())
+  );
+
+  // ══ Bottom Sheet ══════════════════════════════════════════════════════════
+
+  const openSheetService = async (svc: ServiceItem) => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setSelectedService(service);
-    Animated.spring(sheetAnim, {
-      toValue: 1, useNativeDriver: true, tension: 65, friction: 11,
-    }).start();
+    setSheetService(svc);
+    setSheetPackage(null);
+    Animated.spring(sheetAnim, { toValue: 1, useNativeDriver: true, tension: 65, friction: 11 }).start();
+  };
+
+  const openSheetPackage = async (country: Country, pkg: Package) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSheetPackage({ country, pkg });
+    setSheetService(null);
+    Animated.spring(sheetAnim, { toValue: 1, useNativeDriver: true, tension: 65, friction: 11 }).start();
   };
 
   const closeSheet = () => {
-    Animated.timing(sheetAnim, {
-      toValue: 0, duration: 220, useNativeDriver: true,
-    }).start(() => setSelectedService(null));
+    Animated.timing(sheetAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => {
+      setSheetService(null);
+      setSheetPackage(null);
+    });
   };
 
   const proceedToCheckout = async () => {
-    if (!selectedService) return;
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    const svc = selectedService;
+
+    let params: Record<string, string> = {};
+
+    if (sheetService) {
+      params = {
+        provider_code: 'server-b',
+        country_code: sheetService.country_code,
+        country_name: sheetService.title,
+        project_code: sheetService.package.project_code,
+        project_name: sheetService.package.project_name,
+        price: String(sheetService.package.displayPrice),
+      };
+    } else if (sheetPackage) {
+      params = {
+        provider_code: 'server-a',
+        country_code: sheetPackage.country.country_code,
+        country_name: sheetPackage.country.title,
+        project_code: sheetPackage.pkg.project_code,
+        project_name: sheetPackage.pkg.project_name,
+        price: String(sheetPackage.pkg.displayPrice),
+      };
+    } else return;
+
     closeSheet();
-    setTimeout(() => {
-      router.push({
-        pathname: '/checkout',
-        params: {
-          provider_code: DEFAULT_PROVIDER,
-          country_code: svc.country_code,
-          country_name: svc.title,
-          project_code: svc.package.project_code,
-          project_name: svc.package.project_name,
-          price: String(svc.package.displayPrice),
-        },
-      });
-    }, 250);
+    setTimeout(() => router.push({ pathname: '/checkout', params }), 250);
   };
 
-  const sheetTranslateY = sheetAnim.interpolate({
-    inputRange: [0, 1], outputRange: [600, 0],
-  });
+  const sheetTranslateY = sheetAnim.interpolate({ inputRange: [0, 1], outputRange: [600, 0] });
+  const sheetData = sheetService
+    ? { title: sheetService.title, price: sheetService.package.displayPrice, category: sheetService.category, provider: 'Server B' }
+    : sheetPackage
+    ? { title: `${sheetPackage.pkg.project_name} — ${sheetPackage.country.title}`, price: sheetPackage.pkg.displayPrice, category: null, provider: 'Server A' }
+    : null;
 
-  const firstName = user?.username?.split(' ')[0] ||
-    user?.email?.split('@')[0] || 'there';
+  const firstName = user?.username?.split(' ')[0] || user?.email?.split('@')[0] || 'there';
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -141,140 +224,260 @@ export default function HomeScreen() {
           <Text style={styles.greeting}>Hey, {firstName} 👋</Text>
           <Text style={styles.tagline}>Pick a service, get your number.</Text>
         </View>
-        <View style={styles.serverBadge}>
-          <View style={styles.serverDot} />
-          <Text style={styles.serverText}>SERVER B</Text>
-        </View>
       </View>
 
-      {/* ── Search ── */}
-      <View style={styles.searchWrap}>
-        <View style={styles.searchBar}>
-          <MaterialIcons name="search" size={18} color={Colors.textMuted} />
-          <TextInput
-            style={styles.searchInput}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder="Search TikTok, WhatsApp, PayPal..."
-            placeholderTextColor={Colors.textMuted}
-            returnKeyType="search"
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <MaterialIcons name="close" size={16} color={Colors.textMuted} />
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-
-      {/* ── Loading state ── */}
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <View style={styles.loadingCard}>
-            <ActivityIndicator color={Colors.primary} size="large" />
-            <Text style={styles.loadingTitle}>Loading services...</Text>
-            <Text style={styles.loadingSubtitle}>Fetching available prices from Server B</Text>
-            {/* Progress bar */}
-            <View style={styles.progressTrack}>
-              <Animated.View style={[styles.progressFill, { width: `${Math.round(loadProgress * 100)}%` }]} />
-            </View>
-            <Text style={styles.progressLabel}>
-              {loadProgress < 1
-                ? `${Math.round(loadProgress * 100)}% — filtering unavailable services...`
-                : 'Almost done...'}
-            </Text>
-          </View>
-        </View>
-      ) : (
-        <>
-          {/* ── Category chips ── */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.categoryRow}
-          >
-            {CATEGORIES.filter((cat) => categoryCounts[cat] > 0 || cat === 'All').map((cat) => {
-              const active = activeCategory === cat;
-              return (
-                <TouchableOpacity
-                  key={cat}
-                  style={[styles.chip, active && styles.chipActive]}
-                  onPress={async () => {
-                    await Haptics.selectionAsync();
-                    setActiveCategory(cat);
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <MaterialIcons
-                    name={CATEGORY_ICONS[cat] as any}
-                    size={14}
-                    color={active ? Colors.black : Colors.textSecondary}
-                  />
-                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{cat}</Text>
-                  <View style={[styles.chipCount, active && styles.chipCountActive]}>
-                    <Text style={[styles.chipCountText, active && styles.chipCountTextActive]}>
-                      {categoryCounts[cat]}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-
-          {/* ── Service grid ── */}
-          {filteredServices.length === 0 ? (
-            <View style={styles.emptyCenter}>
-              <View style={styles.emptyIcon}>
-                <MaterialIcons name="search-off" size={32} color={Colors.textMuted} />
+      {/* ── Provider tabs ── */}
+      <View style={styles.providerRow}>
+        {PROVIDERS.map((p) => {
+          const active = provider === p.code;
+          return (
+            <TouchableOpacity
+              key={p.code}
+              style={[styles.providerTab, active && styles.providerTabActive]}
+              onPress={async () => {
+                await Haptics.selectionAsync();
+                setProvider(p.code);
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.providerDot, active && styles.providerDotActive]} />
+              <View>
+                <Text style={[styles.providerTabLabel, active && styles.providerTabLabelActive]}>
+                  {p.label}
+                </Text>
+                <Text style={styles.providerTabDesc}>{p.desc}</Text>
               </View>
-              <Text style={styles.emptyTitle}>No results</Text>
-              <Text style={styles.emptySub}>
-                {searchQuery ? `No services match "${searchQuery}"` : `No services in ${activeCategory} category`}
-              </Text>
-              <TouchableOpacity
-                style={styles.clearBtn}
-                onPress={() => { setSearchQuery(''); setActiveCategory('All'); }}
-              >
-                <Text style={styles.clearBtnText}>Clear filters</Text>
-              </TouchableOpacity>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* ══════════ SERVER B CONTENT ══════════ */}
+      {provider === 'server-b' && (
+        <>
+          {/* Search */}
+          <View style={styles.searchWrap}>
+            <View style={styles.searchBar}>
+              <MaterialIcons name="search" size={18} color={Colors.textMuted} />
+              <TextInput
+                style={styles.searchInput}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search TikTok, WhatsApp, PayPal..."
+                placeholderTextColor={Colors.textMuted}
+                returnKeyType="search"
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <MaterialIcons name="close" size={16} color={Colors.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          {loadingServices ? (
+            <View style={styles.loadingContainer}>
+              <View style={styles.loadingCard}>
+                <ActivityIndicator color={Colors.primary} size="large" />
+                <Text style={styles.loadingTitle}>Loading services...</Text>
+                <Text style={styles.loadingSubtitle}>Fetching available prices from Server B</Text>
+                <View style={styles.progressTrack}>
+                  <View style={[styles.progressFill, { width: `${Math.round(loadProgress * 100)}%` }]} />
+                </View>
+                <Text style={styles.progressLabel}>
+                  {loadProgress < 1 ? `${Math.round(loadProgress * 100)}% — filtering unavailable...` : 'Almost done...'}
+                </Text>
+              </View>
             </View>
           ) : (
-            <FlatList
-              data={filteredServices}
-              keyExtractor={(item) => item.country_code}
-              numColumns={2}
-              columnWrapperStyle={styles.row}
-              contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 32 }]}
-              showsVerticalScrollIndicator={false}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={onRefresh}
-                  tintColor={Colors.primary}
-                  colors={[Colors.primary]}
+            <>
+              {/* Category chips */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.categoryRow}
+              >
+                {CATEGORIES.filter((cat) => categoryCounts[cat] > 0 || cat === 'All').map((cat) => {
+                  const active = activeCategory === cat;
+                  return (
+                    <TouchableOpacity
+                      key={cat}
+                      style={[styles.chip, active && styles.chipActive]}
+                      onPress={async () => { await Haptics.selectionAsync(); setActiveCategory(cat); }}
+                      activeOpacity={0.8}
+                    >
+                      <MaterialIcons name={CATEGORY_ICONS[cat] as any} size={14} color={active ? Colors.black : Colors.textSecondary} />
+                      <Text style={[styles.chipText, active && styles.chipTextActive]}>{cat}</Text>
+                      <View style={[styles.chipCount, active && styles.chipCountActive]}>
+                        <Text style={[styles.chipCountText, active && styles.chipCountTextActive]}>
+                          {categoryCounts[cat]}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              {filteredServices.length === 0 ? (
+                <View style={styles.emptyCenter}>
+                  <View style={styles.emptyIcon}>
+                    <MaterialIcons name="search-off" size={32} color={Colors.textMuted} />
+                  </View>
+                  <Text style={styles.emptyTitle}>No results</Text>
+                  <Text style={styles.emptySub}>
+                    {searchQuery ? `No services match "${searchQuery}"` : `No services in ${activeCategory}`}
+                  </Text>
+                  <TouchableOpacity style={styles.clearBtn} onPress={() => { setSearchQuery(''); setActiveCategory('All'); }}>
+                    <Text style={styles.clearBtnText}>Clear filters</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <FlatList
+                  data={filteredServices}
+                  keyExtractor={(item) => item.country_code}
+                  numColumns={2}
+                  columnWrapperStyle={styles.row}
+                  contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 32 }]}
+                  showsVerticalScrollIndicator={false}
+                  refreshControl={
+                    <RefreshControl refreshing={refreshing} onRefresh={() => loadServerBServices(true)} tintColor={Colors.primary} colors={[Colors.primary]} />
+                  }
+                  ListHeaderComponent={
+                    <Text style={styles.resultsCount}>
+                      {filteredServices.length} service{filteredServices.length !== 1 ? 's' : ''}
+                      {activeCategory !== 'All' ? ` · ${activeCategory}` : ''}
+                    </Text>
+                  }
+                  renderItem={({ item }) => (
+                    <ServiceCard service={item} onPress={() => openSheetService(item)} />
+                  )}
                 />
-              }
-              ListHeaderComponent={
-                <Text style={styles.resultsCount}>
-                  {filteredServices.length} {activeCategory !== 'All' ? activeCategory + ' ' : ''}service{filteredServices.length !== 1 ? 's' : ''}
-                </Text>
-              }
-              renderItem={({ item }) => (
-                <ServiceCard service={item} onPress={() => openSheet(item)} />
               )}
-            />
+            </>
           )}
         </>
       )}
 
-      {/* ══════ Bottom Sheet ══════ */}
-      {!!selectedService && (
+      {/* ══════════ SERVER A CONTENT ══════════ */}
+      {provider === 'server-a' && (
+        <View style={{ flex: 1 }}>
+          {loadingCountries ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator color={Colors.primary} size="large" />
+              <Text style={[styles.loadingTitle, { marginTop: Spacing.md }]}>Loading countries...</Text>
+            </View>
+          ) : (
+            <>
+              {/* Country search */}
+              <View style={styles.searchWrap}>
+                <View style={styles.searchBar}>
+                  <MaterialIcons name="public" size={18} color={Colors.textMuted} />
+                  <TextInput
+                    style={styles.searchInput}
+                    value={countrySearch}
+                    onChangeText={setCountrySearch}
+                    placeholder="Search countries..."
+                    placeholderTextColor={Colors.textMuted}
+                  />
+                  {countrySearch.length > 0 && (
+                    <TouchableOpacity onPress={() => setCountrySearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <MaterialIcons name="close" size={16} color={Colors.textMuted} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+
+              {/* Country list + packages panel */}
+              <View style={styles.serverALayout}>
+                {/* Country list */}
+                <FlatList
+                  style={styles.countryList}
+                  data={filteredCountries}
+                  keyExtractor={(item) => item.country_code}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={{ paddingBottom: insets.bottom + 32, paddingTop: Spacing.xs }}
+                  ListHeaderComponent={
+                    <Text style={styles.resultsCount}>{filteredCountries.length} countries</Text>
+                  }
+                  renderItem={({ item }) => {
+                    const active = selectedCountry?.country_code === item.country_code;
+                    return (
+                      <TouchableOpacity
+                        style={[styles.countryItem, active && styles.countryItemActive]}
+                        onPress={() => selectCountry(item)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.countryFlag}>{getFlagEmoji(item.code)}</Text>
+                        <Text style={[styles.countryName, active && styles.countryNameActive]} numberOfLines={1}>
+                          {item.title}
+                        </Text>
+                        {active && <MaterialIcons name="chevron-right" size={16} color={Colors.primary} />}
+                      </TouchableOpacity>
+                    );
+                  }}
+                />
+
+                {/* Platform packages for selected country */}
+                <View style={styles.packagesPanel}>
+                  {!selectedCountry ? (
+                    <View style={styles.selectCountryHint}>
+                      <MaterialIcons name="arrow-back" size={24} color={Colors.textMuted} />
+                      <Text style={styles.selectCountryText}>Select a country to see available platforms</Text>
+                    </View>
+                  ) : loadingPackages ? (
+                    <View style={styles.packageLoading}>
+                      <ActivityIndicator color={Colors.primary} />
+                      <Text style={styles.packageLoadingText}>Loading...</Text>
+                    </View>
+                  ) : countryPackages.length === 0 ? (
+                    <View style={styles.selectCountryHint}>
+                      <MaterialIcons name="info-outline" size={24} color={Colors.textMuted} />
+                      <Text style={styles.selectCountryText}>No platforms available for {selectedCountry.title}</Text>
+                    </View>
+                  ) : (
+                    <FlatList
+                      data={countryPackages}
+                      keyExtractor={(item) => item.project_code}
+                      showsVerticalScrollIndicator={false}
+                      contentContainerStyle={{ paddingBottom: insets.bottom + 32, paddingTop: Spacing.xs }}
+                      ListHeaderComponent={
+                        <Text style={styles.resultsCount}>
+                          {selectedCountry.title} · {countryPackages.length} platforms
+                        </Text>
+                      }
+                      renderItem={({ item }) => (
+                        <TouchableOpacity
+                          style={styles.packageItem}
+                          onPress={() => openSheetPackage(selectedCountry, item)}
+                          activeOpacity={0.8}
+                        >
+                          <View style={styles.packageIconWrap}>
+                            <MaterialIcons
+                              name={(PLATFORM_ICONS[item.project_name] || 'phone-android') as any}
+                              size={20}
+                              color={Colors.primary}
+                            />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.packageName} numberOfLines={1}>{item.project_name}</Text>
+                            <Text style={styles.packagePrice}>₦{item.displayPrice.toLocaleString()}</Text>
+                          </View>
+                          <MaterialIcons name="arrow-forward-ios" size={12} color={Colors.textMuted} />
+                        </TouchableOpacity>
+                      )}
+                    />
+                  )}
+                </View>
+              </View>
+            </>
+          )}
+        </View>
+      )}
+
+      {/* ══════════ BOTTOM SHEET ══════════ */}
+      {!!sheetData && (
         <>
-          <TouchableOpacity
-            style={styles.backdrop}
-            activeOpacity={1}
-            onPress={closeSheet}
-          />
+          <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={closeSheet} />
           <Animated.View
             style={[
               styles.sheet,
@@ -283,68 +486,44 @@ export default function HomeScreen() {
           >
             <View style={styles.sheetHandle} />
 
-            {/* Service identity */}
             <View style={styles.sheetServiceRow}>
               <View style={styles.sheetServiceIcon}>
                 <MaterialIcons
-                  name={(PLATFORM_ICONS[selectedService.title.split(' -')[0]?.trim()] || 'phone-android') as any}
+                  name={(PLATFORM_ICONS[sheetData.title.split(' —')[0]?.split(' -')[0]?.trim()] || 'phone-android') as any}
                   size={26}
                   color={Colors.primary}
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.sheetServiceName} numberOfLines={2}>
-                  {selectedService.title}
-                </Text>
+                <Text style={styles.sheetServiceName} numberOfLines={2}>{sheetData.title}</Text>
                 <View style={styles.sheetServerTag}>
                   <View style={styles.serverDot} />
-                  <Text style={styles.sheetServerTagText}>Server B · {selectedService.category}</Text>
+                  <Text style={styles.sheetServerTagText}>{sheetData.provider} · SMS Verification</Text>
                 </View>
               </View>
-              {/* Category pill */}
-              <View style={styles.sheetCatPill}>
-                <MaterialIcons name={CATEGORY_ICONS[selectedService.category] as any} size={11} color={Colors.primary} />
-                <Text style={styles.sheetCatText}>{selectedService.category}</Text>
-              </View>
             </View>
 
-            {/* Order details */}
             <View style={styles.sheetDetails}>
-              <View style={styles.sheetRow}>
-                <Text style={styles.sheetRowLabel}>You receive</Text>
-                <Text style={styles.sheetRowValue}>Real temporary phone number</Text>
-              </View>
-              <View style={styles.sheetRow}>
-                <Text style={styles.sheetRowLabel}>OTP delivery</Text>
-                <Text style={styles.sheetRowValue}>Auto-captured instantly</Text>
-              </View>
-              <View style={styles.sheetRow}>
-                <Text style={styles.sheetRowLabel}>Refund policy</Text>
-                <Text style={[styles.sheetRowValue, { color: Colors.primary }]}>
-                  Auto-refund if no OTP in 5 mins
-                </Text>
-              </View>
-              {/* Price — always pre-loaded, no spinner */}
+              {[
+                { label: 'You receive', value: 'Real temporary phone number' },
+                { label: 'OTP delivery', value: 'Auto-captured within 10 min' },
+                { label: 'Refund policy', value: 'Auto-refund if no OTP in 5 mins', green: true },
+              ].map((row) => (
+                <View key={row.label} style={styles.sheetRow}>
+                  <Text style={styles.sheetRowLabel}>{row.label}</Text>
+                  <Text style={[styles.sheetRowValue, row.green && { color: Colors.primary }]}>{row.value}</Text>
+                </View>
+              ))}
               <View style={[styles.sheetRow, styles.sheetPriceRow]}>
                 <Text style={styles.sheetPriceLabel}>Total</Text>
-                <Text style={styles.sheetPrice}>
-                  ₦{selectedService.package.displayPrice.toLocaleString()}
-                </Text>
+                <Text style={styles.sheetPrice}>₦{sheetData.price.toLocaleString()}</Text>
               </View>
             </View>
 
-            {/* CTA */}
-            <TouchableOpacity
-              style={styles.sheetPayBtn}
-              onPress={proceedToCheckout}
-              activeOpacity={0.88}
-            >
+            <TouchableOpacity style={styles.sheetPayBtn} onPress={proceedToCheckout} activeOpacity={0.88}>
               <MaterialIcons name="lock" size={16} color={Colors.black} />
-              <Text style={styles.sheetPayBtnText}>
-                Pay ₦{selectedService.package.displayPrice.toLocaleString()}
-              </Text>
+              <Text style={styles.sheetPayBtnText}>Pay ₦{sheetData.price.toLocaleString()}</Text>
             </TouchableOpacity>
-
             <TouchableOpacity style={styles.sheetCancelBtn} onPress={closeSheet}>
               <Text style={styles.sheetCancelText}>Cancel</Text>
             </TouchableOpacity>
@@ -355,19 +534,25 @@ export default function HomeScreen() {
   );
 }
 
-// ── Service Card ─────────────────────────────────────────────────────────────
+// ── Helper ───────────────────────────────────────────────────────────────────
+
+function getFlagEmoji(countryCode: string): string {
+  const code = countryCode?.toUpperCase();
+  if (!code || code.length !== 2 || !/^[A-Z]{2}$/.test(code)) return '🌐';
+  const offset = 127397;
+  return String.fromCodePoint(...code.split('').map((c) => c.charCodeAt(0) + offset));
+}
+
+// ── Service Card (Server B) ──────────────────────────────────────────────────
 
 function ServiceCard({ service, onPress }: { service: ServiceItem; onPress: () => void }) {
   const scaleAnim = useRef(new Animated.Value(1)).current;
-  const onPressIn = () =>
-    Animated.spring(scaleAnim, { toValue: 0.95, useNativeDriver: true, speed: 30 }).start();
-  const onPressOut = () =>
-    Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 30 }).start();
+  const onPressIn = () => Animated.spring(scaleAnim, { toValue: 0.95, useNativeDriver: true, speed: 30 }).start();
+  const onPressOut = () => Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 30 }).start();
 
   const parts = service.title.split(' - ');
   const mainName = parts[0]?.trim() || service.title;
   const subName = parts[1]?.trim() || null;
-  const iconName = (PLATFORM_ICONS[mainName] || 'phone-android') as any;
 
   return (
     <Animated.View style={[styles.cardWrap, { transform: [{ scale: scaleAnim }] }]}>
@@ -380,22 +565,15 @@ function ServiceCard({ service, onPress }: { service: ServiceItem; onPress: () =
       >
         <View style={styles.cardTop}>
           <View style={styles.cardIconWrap}>
-            <MaterialIcons name={iconName} size={22} color={Colors.primary} />
+            <MaterialIcons name={(PLATFORM_ICONS[mainName] || 'phone-android') as any} size={22} color={Colors.primary} />
           </View>
-          {/* Category micro-tag */}
           <View style={styles.cardCatTag}>
             <Text style={styles.cardCatTagText}>{service.category}</Text>
           </View>
         </View>
-
         <Text style={styles.cardName} numberOfLines={2}>{mainName}</Text>
         {subName && <Text style={styles.cardSub} numberOfLines={1}>{subName}</Text>}
-
-        {/* Price — always shown, pre-loaded */}
-        <Text style={styles.cardPrice}>
-          ₦{service.package.displayPrice.toLocaleString()}
-        </Text>
-
+        <Text style={styles.cardPrice}>₦{service.package.displayPrice.toLocaleString()}</Text>
         <View style={styles.cardFooter}>
           <Text style={styles.cardBuyLabel}>Get number</Text>
           <MaterialIcons name="arrow-forward" size={13} color={Colors.primary} />
@@ -411,109 +589,102 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
 
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.md,
   },
   greeting: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   tagline: { color: Colors.textSecondary, fontSize: FontSize.xs, marginTop: 2 },
-  serverBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.full,
-    paddingHorizontal: 12, paddingVertical: 6,
-  },
-  serverDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: Colors.primary },
-  serverText: { color: Colors.textSecondary, fontSize: 11, fontWeight: FontWeight.semibold },
 
+  // Provider tabs
+  providerRow: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.md,
+    gap: Spacing.sm,
+  },
+  providerTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+  },
+  providerTabActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryMuted,
+  },
+  providerDot: {
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: Colors.textMuted,
+  },
+  providerDotActive: { backgroundColor: Colors.primary },
+  providerTabLabel: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  providerTabLabelActive: { color: Colors.primary },
+  providerTabDesc: { color: Colors.textMuted, fontSize: 10, marginTop: 1 },
+
+  serverDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: Colors.primary },
+
+  // Search
   searchWrap: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.sm },
   searchBar: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surface,
     borderWidth: 1, borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.md,
-    height: 46,
+    borderRadius: Radius.md, paddingHorizontal: Spacing.md, height: 46,
   },
-  searchInput: {
-    flex: 1, color: Colors.text, fontSize: FontSize.sm, includeFontPadding: false,
-  },
+  searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.sm, includeFontPadding: false },
 
   // Loading
   loadingContainer: {
     flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.lg,
   },
   loadingCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.xl,
+    backgroundColor: Colors.surface, borderRadius: Radius.xl,
     borderWidth: 1, borderColor: Colors.surfaceBorder,
-    padding: Spacing.xl,
-    alignItems: 'center',
-    gap: Spacing.md,
-    width: '100%',
+    padding: Spacing.xl, alignItems: 'center', gap: Spacing.md, width: '100%',
   },
   loadingTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   loadingSubtitle: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center' },
   progressTrack: {
-    height: 6, width: '100%',
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full,
-    overflow: 'hidden',
+    height: 6, width: '100%', backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.full, overflow: 'hidden',
   },
-  progressFill: {
-    height: '100%',
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.full,
-  },
+  progressFill: { height: '100%', backgroundColor: Colors.primary, borderRadius: Radius.full },
   progressLabel: { color: Colors.textMuted, fontSize: 11, textAlign: 'center' },
 
   // Category chips
   categoryRow: {
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.md,
-    gap: Spacing.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
+    paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md, gap: Spacing.sm,
+    flexDirection: 'row', alignItems: 'center',
   },
   chip: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.full,
-    paddingHorizontal: 12, paddingVertical: 7,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 7,
   },
-  chipActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { color: Colors.textSecondary, fontSize: 12, fontWeight: FontWeight.medium },
   chipTextActive: { color: Colors.black },
   chipCount: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full,
-    paddingHorizontal: 5, paddingVertical: 1,
-    minWidth: 20, alignItems: 'center',
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full,
+    paddingHorizontal: 5, paddingVertical: 1, minWidth: 20, alignItems: 'center',
   },
   chipCountActive: { backgroundColor: 'rgba(0,0,0,0.2)' },
   chipCountText: { color: Colors.textMuted, fontSize: 10, fontWeight: FontWeight.bold },
   chipCountTextActive: { color: Colors.black },
 
-  // Results count
-  resultsCount: {
-    color: Colors.textMuted,
-    fontSize: 11,
-    marginBottom: Spacing.sm,
-    marginLeft: 2,
-  },
+  resultsCount: { color: Colors.textMuted, fontSize: 11, marginBottom: Spacing.sm, marginLeft: 2 },
 
   // Empty
   emptyCenter: {
-    flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md,
-    paddingHorizontal: Spacing.xl,
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    gap: Spacing.md, paddingHorizontal: Spacing.xl,
   },
   emptyIcon: {
     width: 64, height: 64, borderRadius: 32,
@@ -532,15 +703,11 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.xs },
   row: { gap: Spacing.md, marginBottom: Spacing.md },
 
-  // Card
+  // Service card (Server B)
   cardWrap: { flex: 1 },
   card: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    gap: 6,
-    minHeight: 145,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.lg, padding: Spacing.md, gap: 6, minHeight: 145,
   },
   cardTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   cardIconWrap: {
@@ -550,30 +717,67 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(0,200,83,0.2)',
   },
   cardCatTag: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full,
     paddingHorizontal: 6, paddingVertical: 2,
   },
   cardCatTagText: { color: Colors.textMuted, fontSize: 9, fontWeight: FontWeight.semibold },
-  cardName: {
-    color: Colors.text, fontSize: FontSize.sm,
-    fontWeight: FontWeight.bold, lineHeight: 18,
-  },
+  cardName: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.bold, lineHeight: 18 },
   cardSub: { color: Colors.textMuted, fontSize: 10 },
-  cardPrice: {
-    color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.bold,
-  },
+  cardPrice: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
   cardFooter: {
     flexDirection: 'row', alignItems: 'center',
     justifyContent: 'space-between', marginTop: 'auto' as any,
   },
   cardBuyLabel: { color: Colors.textSecondary, fontSize: 11, fontWeight: FontWeight.medium },
 
-  // Backdrop
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: Colors.overlay,
+  // Server A layout
+  serverALayout: { flex: 1, flexDirection: 'row' },
+  countryList: {
+    width: 140,
+    borderRightWidth: 1,
+    borderRightColor: Colors.surfaceBorder,
+    paddingHorizontal: Spacing.sm,
   },
+  countryItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 12, paddingHorizontal: 8,
+    borderRadius: Radius.sm, marginBottom: 2,
+  },
+  countryItemActive: {
+    backgroundColor: Colors.primaryMuted,
+    borderWidth: 1, borderColor: 'rgba(0,200,83,0.2)',
+  },
+  countryFlag: { fontSize: 18 },
+  countryName: {
+    flex: 1, color: Colors.textSecondary, fontSize: 12, fontWeight: FontWeight.medium,
+  },
+  countryNameActive: { color: Colors.primary },
+
+  packagesPanel: { flex: 1, paddingHorizontal: Spacing.md },
+  packageLoading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
+  packageLoadingText: { color: Colors.textSecondary, fontSize: FontSize.sm },
+  selectCountryHint: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    gap: Spacing.sm, paddingHorizontal: Spacing.md,
+  },
+  selectCountryText: {
+    color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center', lineHeight: 20,
+  },
+  packageItem: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.md, padding: Spacing.md, marginBottom: Spacing.sm,
+  },
+  packageIconWrap: {
+    width: 38, height: 38, borderRadius: Radius.sm,
+    backgroundColor: Colors.primaryMuted,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  packageName: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+  packagePrice: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.bold, marginTop: 2 },
+
+  // Backdrop
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: Colors.overlay },
 
   // Sheet
   sheet: {
@@ -582,43 +786,28 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl,
     borderTopWidth: 1, borderColor: Colors.surfaceBorder,
     padding: Spacing.lg, paddingTop: Spacing.md,
-    shadowColor: '#000', shadowOpacity: 0.5,
-    shadowRadius: 24, shadowOffset: { width: 0, height: -4 },
+    shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 24, shadowOffset: { width: 0, height: -4 },
     elevation: 16,
   },
   sheetHandle: {
-    width: 40, height: 4, borderRadius: 2,
-    backgroundColor: Colors.surfaceBorder,
+    width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.surfaceBorder,
     alignSelf: 'center', marginBottom: Spacing.lg,
   },
   sheetServiceRow: {
-    flexDirection: 'row', alignItems: 'center',
-    gap: Spacing.md, marginBottom: Spacing.lg,
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginBottom: Spacing.lg,
   },
   sheetServiceIcon: {
-    width: 52, height: 52, borderRadius: Radius.md,
-    backgroundColor: Colors.primaryMuted,
+    width: 52, height: 52, borderRadius: Radius.md, backgroundColor: Colors.primaryMuted,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: Colors.primary,
-    flexShrink: 0,
+    borderWidth: 1, borderColor: Colors.primary, flexShrink: 0,
   },
-  sheetServiceName: {
-    color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.bold, lineHeight: 24,
-  },
+  sheetServiceName: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.bold, lineHeight: 24 },
   sheetServerTag: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
   sheetServerTagText: { color: Colors.textSecondary, fontSize: FontSize.xs },
-  sheetCatPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: Colors.primaryMuted,
-    borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 4,
-    borderWidth: 1, borderColor: 'rgba(0,200,83,0.2)',
-    flexShrink: 0,
-  },
-  sheetCatText: { color: Colors.primary, fontSize: 10, fontWeight: FontWeight.semibold },
 
   sheetDetails: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.surfaceBorder,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.surfaceBorder,
     paddingHorizontal: Spacing.md, marginBottom: Spacing.lg,
   },
   sheetRow: {
@@ -636,8 +825,7 @@ const styles = StyleSheet.create({
 
   sheetPayBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.primary, borderRadius: Radius.md, height: 54,
-    marginBottom: Spacing.sm,
+    backgroundColor: Colors.primary, borderRadius: Radius.md, height: 54, marginBottom: Spacing.sm,
   },
   sheetPayBtnText: { color: Colors.black, fontSize: FontSize.md, fontWeight: FontWeight.bold },
   sheetCancelBtn: { alignItems: 'center', paddingVertical: Spacing.sm },

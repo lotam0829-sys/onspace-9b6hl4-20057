@@ -9,11 +9,11 @@ export interface Provider {
 }
 
 /**
- * For Server B, country_code is a SERVICE STRING (e.g. "tiktok", "whatsapp")
- * not a numeric country code. The "title" is the display name (e.g. "TikTok - USA").
+ * For Server B: country_code is a SERVICE STRING (e.g. "tiktok").
+ * For Server A: country_code is a NUMERIC STRING (e.g. "88") representing a real country.
  */
 export interface Country {
-  country_code: string;
+  country_code: string;   // string for both — numeric string for A, service string for B
   title: string;
   code: string;
 }
@@ -117,6 +117,12 @@ export async function getCountries(providerCode: string): Promise<Country[]> {
   }));
 }
 
+/**
+ * Get packages for a provider + country.
+ * For Server B: countryCode is a service string (e.g. "tiktok")
+ * For Server A: countryCode is a numeric string (e.g. "88")
+ * The packages endpoint always uses the field name "country_code".
+ */
 export async function getPackages(providerCode: string, countryCode: string): Promise<Package[]> {
   const data = await sociallyProxy('/sms/verification/service/provider/packages', 'POST', {
     provider_code: providerCode,
@@ -135,14 +141,12 @@ export async function getPackages(providerCode: string, countryCode: string): Pr
 }
 
 /**
- * Loads ALL services with pre-fetched prices. Only returns services
- * that have at least one valid package with a non-zero price.
- * Uses Promise.allSettled so a single failing package fetch doesn't block others.
+ * For Server B: loads ALL services (country list IS the service list) with pre-fetched prices.
+ * Batch-fetches packages in parallel, returns only items with a valid price > 0.
  */
 export async function getServicesWithPrices(providerCode: string): Promise<ServiceItem[]> {
   const countries = await getCountries(providerCode);
 
-  // Batch fetch packages in parallel — max 20 concurrent to avoid rate limits
   const BATCH = 20;
   const results: ServiceItem[] = [];
 
@@ -166,7 +170,6 @@ export async function getServicesWithPrices(providerCode: string): Promise<Servi
           });
         }
       }
-      // silently skip services that failed or returned no packages
     });
   }
 
@@ -174,7 +177,17 @@ export async function getServicesWithPrices(providerCode: string): Promise<Servi
 }
 
 /**
+ * For Server A: given a country, load all available packages (platforms).
+ * Returns packages with displayPrice applied.
+ */
+export async function getPackagesForCountry(providerCode: string, countryCode: string): Promise<Package[]> {
+  const pkgs = await getPackages(providerCode, countryCode);
+  return pkgs.filter((p) => p.price > 0 && p.displayPrice > 0);
+}
+
+/**
  * GET /request/sms/verification/{reference}/otp
+ * Parses the OTP from the message string (e.g. "Your OTP (1234) has been received").
  */
 export async function getOTP(reference: string): Promise<{ otp: string | null; mobile_number: string | null }> {
   try {
