@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert } from '@/template';
+import { useRouter } from 'expo-router';
 import { useWallet } from '@/hooks/useWallet';
 import { initializeSaveCard } from '@/services/paystackService';
 import { getSupabaseClient } from '@/template';
@@ -17,6 +18,7 @@ const supabase = getSupabaseClient();
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { user, logout } = useAuth();
   const { profile, hasCard, refreshProfile } = useWallet();
   const { showAlert } = useAlert();
@@ -103,7 +105,16 @@ export default function ProfileScreen() {
       <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
 
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Profile</Text>
+        <TouchableOpacity
+          onLongPress={async () => {
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            router.push('/debug');
+          }}
+          delayLongPress={800}
+          activeOpacity={1}
+        >
+          <Text style={styles.headerTitle}>Profile</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>

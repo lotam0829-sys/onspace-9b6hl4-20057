@@ -24,6 +24,10 @@ export default function RootLayout() {
                   name="number-display"
                   options={{ headerShown: false }}
                 />
+                <Stack.Screen
+                  name="debug"
+                  options={{ headerShown: false }}
+                />
               </Stack>
             </OrderProvider>
           </WalletProvider>
