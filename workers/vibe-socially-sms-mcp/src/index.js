@@ -71,6 +71,15 @@ const TOOLS = [
       required: ["reference"],
     },
   },
+  {
+    name: "get_balance",
+    description: "Check the Socially.ng account balance used to fund number purchases.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
 ];
 
 const corsHeaders = {
@@ -148,6 +157,9 @@ export default {
               break;
             case "get_sms_otp":
               result = await getSmsOtp(env, args);
+              break;
+            case "get_balance":
+              result = await getBalance(env);
               break;
             default:
               return mcpError(id, -32601, `Unknown tool: ${toolName}`);
@@ -284,6 +296,50 @@ async function getSmsOtp(env, args) {
 }
 
 // --- MCP response helpers ---------------------------------------------------
+
+async function getBalance(env) {
+  const token = env.NUMVAULT_TOKEN;
+  if (!token) {
+    throw new Error("Missing NUMVAULT_TOKEN secret in Worker environment");
+  }
+  const apiBase = env.NUMVAULT_BASE_URL || DEFAULT_API_BASE;
+
+  // Balance is not a Bearer-auth path like the other tools — Socially.ng
+  // exposes it only via the SMM-style unified endpoint: POST to the base
+  // URL with form fields key + action=balance. The same account token
+  // works here as `key`.
+  const form = new URLSearchParams();
+  form.append("key", token);
+  form.append("action", "balance");
+
+  const response = await fetch(apiBase, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: form.toString(),
+  });
+
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(`Socially.ng API error: ${response.status} ${response.statusText} — ${JSON.stringify(data)}`);
+  }
+
+  return {
+    success: true,
+    balance: data?.balance ?? null,
+    currency: data?.currency ?? null,
+    raw: data,
+  };
+}
 
 function mcpOk(id, result) {
   return Response.json({ jsonrpc: "2.0", id, result }, { headers: corsHeaders });

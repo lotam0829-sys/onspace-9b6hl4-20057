@@ -14,6 +14,7 @@ form params instead of Bearer auth).
 | `get_service_packages` | `POST /sms/verification/service/provider/packages` |
 | `buy_sms_number` | `POST /buy/sms/verification/number` |
 | `get_sms_otp` | `GET /request/sms/verification/{reference}/otp` |
+| `get_balance` | `POST` to the base URL (not a sub-path) with form fields `key=<NUMVAULT_TOKEN>&action=balance` — the SMM-style unified endpoint, since Socially.ng has no separate Bearer-auth balance route |
 
 Typical flow: `get_sms_providers` → `get_provider_countries` →
 `get_service_packages` → `buy_sms_number` (returns a `mobile_number` and a
