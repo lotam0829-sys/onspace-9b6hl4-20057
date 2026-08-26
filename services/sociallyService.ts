@@ -43,6 +43,16 @@ export type ServiceCategory =
   | 'Shopping'
   | 'Other';
 
+export type CountryRegion =
+  | 'All'
+  | 'Popular'
+  | 'Africa'
+  | 'Europe'
+  | 'Americas'
+  | 'Asia'
+  | 'Middle East'
+  | 'Other';
+
 // ── Category detection ──────────────────────────────────────────────────────
 
 const CATEGORY_KEYWORDS: Record<ServiceCategory, string[]> = {
@@ -67,6 +77,78 @@ const CATEGORY_KEYWORDS: Record<ServiceCategory, string[]> = {
   ],
   Other: [],
 };
+
+// ── Well-known service ordering ────────────────────────────────────────────
+
+const WELL_KNOWN_SERVICES = [
+  'tiktok', 'whatsapp', 'instagram', 'facebook', 'telegram', 'twitter',
+  'snapchat', 'youtube', 'gmail', 'google', 'discord', 'signal',
+  'paypal', 'binance', 'amazon', 'uber', 'linkedin', 'reddit',
+];
+
+export function getServicePopularityRank(title: string): number {
+  const lower = title.toLowerCase();
+  const idx = WELL_KNOWN_SERVICES.findIndex((s) => lower.includes(s));
+  return idx === -1 ? 999 : idx;
+}
+
+// ── Country region detection ─────────────────────────────────────────────────
+
+const POPULAR_COUNTRIES = [
+  'united states', 'usa', 'us', 'united kingdom', 'uk', 'canada',
+  'australia', 'germany', 'france', 'india', 'nigeria', 'ghana',
+];
+
+const REGION_MAP: Record<CountryRegion, string[]> = {
+  All: [],
+  Popular: POPULAR_COUNTRIES,
+  Africa: [
+    'nigeria', 'ghana', 'kenya', 'south africa', 'ethiopia', 'tanzania',
+    'uganda', 'senegal', 'ivory coast', 'cameroon', 'zimbabwe', 'zambia',
+    'mozambique', 'angola', 'namibia', 'botswana', 'rwanda', 'mali',
+    'madagascar', 'malawi', 'somalia', 'sudan', 'egypt', 'morocco',
+    'algeria', 'tunisia', 'libya', 'chad', 'niger', 'burkina',
+    'benin', 'togo', 'sierra leone', 'liberia', 'gambia', 'guinea',
+  ],
+  Europe: [
+    'united kingdom', 'germany', 'france', 'spain', 'italy', 'netherlands',
+    'belgium', 'portugal', 'poland', 'sweden', 'norway', 'denmark',
+    'finland', 'switzerland', 'austria', 'czech', 'hungary', 'romania',
+    'bulgaria', 'greece', 'ukraine', 'russia', 'ireland', 'scotland',
+    'croatia', 'serbia', 'slovakia', 'estonia', 'latvia', 'lithuania',
+    'luxembourg', 'malta', 'cyprus', 'iceland', 'moldova', 'albania',
+  ],
+  Americas: [
+    'united states', 'usa', 'canada', 'brazil', 'mexico', 'argentina',
+    'colombia', 'chile', 'peru', 'venezuela', 'ecuador', 'bolivia',
+    'paraguay', 'uruguay', 'cuba', 'dominican', 'puerto rico', 'jamaica',
+    'haiti', 'panama', 'costa rica', 'guatemala', 'honduras', 'nicaragua',
+    'el salvador', 'trinidad', 'barbados',
+  ],
+  Asia: [
+    'india', 'china', 'japan', 'south korea', 'indonesia', 'vietnam',
+    'thailand', 'philippines', 'malaysia', 'singapore', 'hong kong',
+    'taiwan', 'bangladesh', 'pakistan', 'sri lanka', 'nepal', 'myanmar',
+    'cambodia', 'laos', 'mongolia', 'kazakhstan', 'uzbekistan',
+    'azerbaijan', 'georgia', 'armenia',
+  ],
+  'Middle East': [
+    'saudi arabia', 'uae', 'united arab', 'turkey', 'israel', 'qatar',
+    'kuwait', 'bahrain', 'oman', 'jordan', 'lebanon', 'iraq', 'iran',
+    'syria', 'yemen', 'palestine', 'afghanistan',
+  ],
+  Other: [],
+};
+
+export function detectCountryRegion(title: string): CountryRegion {
+  const lower = title.toLowerCase();
+  if (POPULAR_COUNTRIES.some((p) => lower.includes(p))) return 'Popular';
+  for (const [region, names] of Object.entries(REGION_MAP) as [CountryRegion, string[]][]) {
+    if (region === 'All' || region === 'Other' || region === 'Popular') continue;
+    if (names.some((n) => lower.includes(n))) return region;
+  }
+  return 'Other';
+}
 
 export function detectCategory(title: string): ServiceCategory {
   const lower = title.toLowerCase();
