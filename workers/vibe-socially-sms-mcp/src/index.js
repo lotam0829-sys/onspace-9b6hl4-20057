@@ -295,8 +295,6 @@ async function getSmsOtp(env, args) {
   };
 }
 
-// --- MCP response helpers ---------------------------------------------------
-
 async function getBalance(env) {
   const token = env.NUMVAULT_TOKEN;
   if (!token) {
@@ -340,6 +338,8 @@ async function getBalance(env) {
     raw: data,
   };
 }
+
+// --- MCP response helpers ---------------------------------------------------
 
 function mcpOk(id, result) {
   return Response.json({ jsonrpc: "2.0", id, result }, { headers: corsHeaders });
