@@ -109,12 +109,17 @@ export async function getProviders(): Promise<Provider[]> {
 
 export async function getCountries(providerCode: string): Promise<Country[]> {
   const data = await sociallyProxy(`/sms/verification/provider/${providerCode}/countries`);
-  const raw = data?.data || [];
-  return raw.map((item: any) => ({
-    country_code: String(item.country_code),
-    title: item.title || item.name || String(item.country_code),
-    code: item.code || String(item.country_code),
-  }));
+  // API may return array directly OR under data key
+  const raw: any[] = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+  return raw
+    .filter((item: any) => item && (item.country_code !== undefined || item.id !== undefined))
+    .map((item: any) => ({
+      // Prefer numeric id as country_code for Server A, fallback to country_code field
+      country_code: String(item.country_code ?? item.id ?? ''),
+      title: item.title || item.name || item.country_name || String(item.country_code ?? item.id ?? ''),
+      code: item.code || item.iso_code || item.flag_code || String(item.country_code ?? item.id ?? ''),
+    }))
+    .filter((c) => c.country_code !== '');
 }
 
 /**
@@ -129,13 +134,26 @@ export async function getPackages(providerCode: string, countryCode: string): Pr
     country_code: countryCode,
   });
 
-  const packages: Package[] = (data?.data || []).map((pkg: any) => ({
-    country_code: String(pkg.country_code),
-    project_code: pkg.project_code,
-    project_name: pkg.project_name,
-    price: pkg.price,
-    displayPrice: Math.ceil(pkg.price * MARKUP),
-  }));
+  // API may return array directly OR under data/packages/result key
+  const raw: any[] =
+    Array.isArray(data) ? data :
+    Array.isArray(data?.data) ? data.data :
+    Array.isArray(data?.packages) ? data.packages :
+    Array.isArray(data?.result) ? data.result :
+    [];
+
+  const packages: Package[] = raw
+    .filter((pkg: any) => pkg && (pkg.project_code || pkg.project_name))
+    .map((pkg: any) => {
+      const rawPrice = Number(pkg.price ?? pkg.cost ?? pkg.amount ?? 0);
+      return {
+        country_code: String(pkg.country_code ?? countryCode),
+        project_code: String(pkg.project_code ?? pkg.id ?? ''),
+        project_name: String(pkg.project_name ?? pkg.name ?? pkg.title ?? ''),
+        price: rawPrice,
+        displayPrice: rawPrice > 0 ? Math.ceil(rawPrice * MARKUP) : 0,
+      };
+    });
 
   return packages;
 }

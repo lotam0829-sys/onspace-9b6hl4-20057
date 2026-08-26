@@ -60,6 +60,7 @@ export default function HomeScreen() {
   const [countryPackages, setCountryPackages] = useState<Package[]>([]);
   const [loadingPackages, setLoadingPackages] = useState(false);
   const [countrySearch, setCountrySearch] = useState('');
+  const [packageError, setPackageError] = useState<string | null>(null);
 
   // Bottom sheet (shared for Server B service preview + Server A package preview)
   const [sheetService, setSheetService] = useState<ServiceItem | null>(null);
@@ -138,12 +139,17 @@ export default function HomeScreen() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedCountry(country);
     setCountryPackages([]);
+    setPackageError(null);
     setLoadingPackages(true);
     try {
       const pkgs = await getPackagesForCountry('server-a', country.country_code);
       setCountryPackages(pkgs);
-    } catch (e) {
+      if (pkgs.length === 0) {
+        setPackageError(`No platforms available for ${country.title}`);
+      }
+    } catch (e: any) {
       console.error('Failed to load packages:', e);
+      setPackageError(e?.message || 'Failed to load platforms');
     } finally {
       setLoadingPackages(false);
     }
@@ -432,7 +438,12 @@ export default function HomeScreen() {
                   ) : countryPackages.length === 0 ? (
                     <View style={styles.selectCountryHint}>
                       <MaterialIcons name="info-outline" size={24} color={Colors.textMuted} />
-                      <Text style={styles.selectCountryText}>No platforms available for {selectedCountry.title}</Text>
+                      <Text style={styles.selectCountryText}>
+                        {packageError || `No platforms available for ${selectedCountry.title}`}
+                      </Text>
+                      <Text style={[styles.selectCountryText, { fontSize: 10, marginTop: 4 }]}>
+                        country_code: {selectedCountry.country_code} · code: {selectedCountry.code}
+                      </Text>
                     </View>
                   ) : (
                     <FlatList
