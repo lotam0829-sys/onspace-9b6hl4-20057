@@ -8,7 +8,6 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth, useAlert } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
@@ -26,17 +25,6 @@ export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const { sendOTP, verifyOTPAndLogin, signInWithPassword, operationLoading } = useAuth();
   const { showAlert } = useAlert();
-
-  useEffect(() => {
-    checkOnboarding();
-  }, []);
-
-  const checkOnboarding = async () => {
-    const done = await AsyncStorage.getItem('onboarding_done');
-    if (!done) {
-      router.replace('/onboarding');
-    }
-  };
 
   const handleSendOTP = async () => {
     if (!email.trim()) {
