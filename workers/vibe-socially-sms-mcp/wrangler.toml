@@ -1,0 +1,20 @@
+name = "vibe-socially-sms-mcp"
+main = "src/index.js"
+compatibility_date = "2026-08-25"
+
+# Secrets (set via CLI, never commit these):
+#   wrangler secret put SOCIALLY_BEARER_TOKEN
+#
+# This worker expects Authorization: Bearer <token> per the SMS Verification
+# module docs — separate from the SOCIALLY_API_KEY used by vibe-socially-mcp
+# (the SMM connector), which uses key+action form params instead.
+#
+# Endpoint paths/params are verified against this app's own working
+# integration (supabase/functions/socially-proxy + purchase-number +
+# sms-webhook, and services/sociallyService.ts) rather than the API
+# reference doc alone — the doc's OTP endpoint doesn't match what the
+# live API actually accepts. Confirmed behavior:
+#   - Buy number returns `reference` (echoes what you send) + `mobile_number`.
+#   - OTP is fetched via GET /request/sms/verification/{reference}/otp,
+#     a path param, keyed by that same `reference` — not a query param
+#     called `order_id`.
