@@ -1,16 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  StatusBar, TextInput, Modal, ActivityIndicator,
+  StatusBar, TextInput,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { WebView } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert } from '@/template';
 import { useWallet } from '@/hooks/useWallet';
-import { initializeSaveCard } from '@/services/paystackService';
 import { getSupabaseClient } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
@@ -20,62 +18,14 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user, logout } = useAuth();
-  const { profile, hasCard, refreshProfile } = useWallet();
+  const { profile, refreshProfile } = useWallet();
   const { showAlert } = useAlert();
-  const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
-  const [loadingCard, setLoadingCard] = useState(false);
   const [newName, setNewName] = useState('');
   const [editingName, setEditingName] = useState(false);
 
   useEffect(() => {
     if (user) refreshProfile();
   }, [user]);
-
-  const handleSaveCard = async () => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setLoadingCard(true);
-    try {
-      const data = await initializeSaveCard(user?.email || '');
-      if (data?.data?.authorization_url) {
-        setWebViewUrl(data.data.authorization_url);
-      }
-    } catch (e: any) {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      showAlert('Error', e.message);
-    } finally {
-      setLoadingCard(false);
-    }
-  };
-
-  const handleWebViewNav = async (url: string) => {
-    if (url.includes('numvault.app/payment/callback') || url.includes('paystack.com/close')) {
-      setWebViewUrl(null);
-      setTimeout(() => refreshProfile(), 2000);
-      showAlert('Card Saved', 'Your card has been saved for future payments.');
-    }
-  };
-
-  const handleRemoveCard = async () => {
-    showAlert('Remove Card', 'Are you sure you want to remove your saved card?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove',
-        style: 'destructive',
-        onPress: async () => {
-          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-          await supabase.from('user_profiles').update({
-            card_last4: null,
-            card_auth_code: null,
-            card_brand: null,
-            card_exp_month: null,
-            card_exp_year: null,
-          }).eq('id', user?.id);
-          refreshProfile();
-          showAlert('Card Removed', 'Your saved card has been removed.');
-        },
-      },
-    ]);
-  };
 
   const handleUpdateName = async () => {
     if (!newName.trim()) return;
@@ -151,56 +101,6 @@ export default function ProfileScreen() {
           <Text style={styles.profileEmail}>{user?.email}</Text>
         </View>
 
-        {/* Saved Card */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Payment Method</Text>
-          {hasCard ? (
-            <View style={styles.cardDisplay}>
-              <View style={styles.cardChip}>
-                <MaterialIcons name="credit-card" size={24} color={Colors.primary} />
-              </View>
-              <View style={styles.cardInfo}>
-                <Text style={styles.cardBrand}>
-                  {profile?.card_brand?.toUpperCase() || 'CARD'}
-                </Text>
-                <Text style={styles.cardNumber}>
-                  •••• •••• •••• {profile?.card_last4}
-                </Text>
-                <Text style={styles.cardExpiry}>
-                  Expires {profile?.card_exp_month}/{profile?.card_exp_year}
-                </Text>
-              </View>
-              <TouchableOpacity onPress={handleRemoveCard} style={styles.removeCardBtn}>
-                <MaterialIcons name="delete-outline" size={20} color={Colors.error} />
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <TouchableOpacity
-              style={styles.addCardBtn}
-              onPress={handleSaveCard}
-              disabled={loadingCard}
-              activeOpacity={0.8}
-            >
-              {loadingCard ? (
-                <ActivityIndicator color={Colors.primary} size="small" />
-              ) : (
-                <>
-                  <MaterialIcons name="add-card" size={22} color={Colors.primary} />
-                  <View>
-                    <Text style={styles.addCardTitle}>Add Payment Card</Text>
-                    <Text style={styles.addCardSub}>Save card for one-tap checkout</Text>
-                  </View>
-                  <MaterialIcons name="chevron-right" size={20} color={Colors.textMuted} style={{ marginLeft: 'auto' }} />
-                </>
-              )}
-            </TouchableOpacity>
-          )}
-          <View style={styles.securityBadge}>
-            <MaterialIcons name="lock" size={12} color={Colors.primary} />
-            <Text style={styles.securityText}>256-bit encrypted. We never store your card details.</Text>
-          </View>
-        </View>
-
         {/* Menu items */}
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Account</Text>
@@ -227,27 +127,6 @@ export default function ProfileScreen() {
 
         <View style={{ height: 40 }} />
       </ScrollView>
-
-      {/* Paystack WebView for card save */}
-      <Modal visible={!!webViewUrl} animationType="slide" onRequestClose={() => setWebViewUrl(null)}>
-        <View style={[styles.webViewContainer, { paddingTop: insets.top }]}>
-          <View style={styles.webViewHeader}>
-            <TouchableOpacity onPress={() => setWebViewUrl(null)}>
-              <MaterialIcons name="close" size={24} color={Colors.text} />
-            </TouchableOpacity>
-            <Text style={styles.webViewTitle}>Save Card Securely</Text>
-            <View style={{ width: 24 }} />
-          </View>
-          {webViewUrl && (
-            <WebView
-              source={{ uri: webViewUrl }}
-              onNavigationStateChange={(state) => handleWebViewNav(state.url)}
-              startInLoadingState
-              renderLoading={() => <ActivityIndicator color={Colors.primary} style={{ flex: 1 }} />}
-            />
-          )}
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -302,50 +181,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: Spacing.sm,
   },
-  cardDisplay: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    gap: Spacing.md,
-  },
-  cardChip: {
-    width: 44,
-    height: 44,
-    borderRadius: Radius.md,
-    backgroundColor: Colors.primaryMuted,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cardInfo: { flex: 1 },
-  cardBrand: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.bold },
-  cardNumber: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.medium },
-  cardExpiry: { color: Colors.textSecondary, fontSize: FontSize.xs },
-  removeCardBtn: { padding: 8 },
-  addCardBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    borderStyle: 'dashed',
-  },
-  addCardTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  addCardSub: { color: Colors.textSecondary, fontSize: FontSize.xs },
-  securityBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: Spacing.sm,
-    paddingHorizontal: 4,
-  },
-  securityText: { color: Colors.textSecondary, fontSize: FontSize.xs, lineHeight: 18 },
   menuCard: {
     backgroundColor: Colors.surface,
     borderWidth: 1,
@@ -375,15 +210,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   logoutText: { color: Colors.error, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
-  webViewContainer: { flex: 1, backgroundColor: Colors.background },
-  webViewHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.surfaceBorder,
-  },
-  webViewTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
 });

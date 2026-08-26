@@ -30,9 +30,13 @@ export interface Transaction {
 }
 
 export async function fetchOrders(): Promise<Order[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+
   const { data, error } = await supabase
     .from('orders')
     .select('*')
+    .eq('user_id', user.id)
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
@@ -51,9 +55,13 @@ export async function fetchOrder(id: string): Promise<Order | null> {
 }
 
 export async function fetchTransactions(): Promise<Transaction[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
+    .eq('user_id', user.id)
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
