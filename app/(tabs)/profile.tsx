@@ -4,6 +4,7 @@ import {
   StatusBar, TextInput, Modal, ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
@@ -17,6 +18,7 @@ const supabase = getSupabaseClient();
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { user, logout } = useAuth();
   const { profile, hasCard, refreshProfile } = useWallet();
   const { showAlert } = useAlert();
@@ -92,7 +94,10 @@ export default function ProfileScreen() {
         style: 'destructive',
         onPress: async () => {
           await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          await logout();
+          const { error } = await logout();
+          if (!error) {
+            router.replace('/login');
+          }
         },
       },
     ]);
