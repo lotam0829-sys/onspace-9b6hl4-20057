@@ -21,9 +21,9 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 
 type ProviderCode = 'server-b' | 'server-a';
 
-const PROVIDERS: { code: ProviderCode; label: string; desc: string }[] = [
-  { code: 'server-b', label: 'Server B', desc: 'US-based services' },
-  { code: 'server-a', label: 'Server A', desc: 'Multi-country numbers' },
+const PROVIDERS: { code: ProviderCode; label: string; desc: string; icon: string }[] = [
+  { code: 'server-b', label: 'US Numbers', desc: 'US-based services', icon: 'flag' },
+  { code: 'server-a', label: 'Other Countries', desc: 'Coming soon', icon: 'public' },
 ];
 
 const SERVICE_CATEGORIES: ServiceCategory[] = ['All', 'Social', 'Messaging', 'Finance', 'Shopping', 'Other'];
@@ -339,8 +339,8 @@ export default function HomeScreen() {
               onPress={async () => { await Haptics.selectionAsync(); setProvider(p.code); }}
               activeOpacity={0.8}
             >
-              <View style={[styles.providerDot, active && styles.providerDotActive]} />
-              <View>
+              <MaterialIcons name={p.icon as any} size={16} color={active ? Colors.primary : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
                 <Text style={[styles.providerTabLabel, active && styles.providerTabLabelActive]}>{p.label}</Text>
                 <Text style={styles.providerTabDesc}>{p.desc}</Text>
               </View>
@@ -463,142 +463,31 @@ export default function HomeScreen() {
         </>
       )}
 
-      {/* ═══ SERVER A ═══ */}
+      {/* ═══ SERVER A — COMING SOON ═══ */}
       {provider === 'server-a' && (
-        <View style={{ flex: 1 }}>
-          {loadingCountries ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator color={Colors.primary} size="large" />
-              <Text style={[styles.loadingTitle, { marginTop: Spacing.md }]}>Loading countries...</Text>
+        <View style={styles.comingSoonContainer}>
+          <View style={styles.comingSoonCard}>
+            <View style={styles.comingSoonIconWrap}>
+              <MaterialIcons name="public" size={40} color={Colors.primary} />
             </View>
-          ) : (
-            <>
-              {/* Country search */}
-              <View style={styles.searchWrap}>
-                <View style={styles.searchBar}>
-                  <MaterialIcons name="public" size={18} color={Colors.textMuted} />
-                  <TextInput
-                    style={styles.searchInput}
-                    value={countrySearch}
-                    onChangeText={setCountrySearch}
-                    placeholder="Search countries..."
-                    placeholderTextColor={Colors.textMuted}
-                  />
-                  {countrySearch.length > 0 && (
-                    <TouchableOpacity onPress={() => setCountrySearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                      <MaterialIcons name="close" size={16} color={Colors.textMuted} />
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
+            <Text style={styles.comingSoonTitle}>Other Countries</Text>
+            <Text style={styles.comingSoonSub}>
+              Temporary phone numbers from multiple countries are coming soon. You will be able to verify services using numbers from the UK, Canada, Germany, Nigeria, and many more.
+            </Text>
+            <View style={styles.comingSoonBadge}>
+              <MaterialIcons name="schedule" size={13} color={Colors.primary} />
+              <Text style={styles.comingSoonBadgeText}>Coming Soon</Text>
+            </View>
+          </View>
 
-              {/* Region chips */}
-              <ScrollView
-                horizontal showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.chipRow}
-              >
-                {COUNTRY_REGIONS.filter((r) => regionCounts[r] > 0 || r === 'All').map((region) => {
-                  const active = activeRegion === region;
-                  return (
-                    <TouchableOpacity
-                      key={region}
-                      style={[styles.chip, active && styles.chipActive]}
-                      onPress={async () => { await Haptics.selectionAsync(); setActiveRegion(region); }}
-                      activeOpacity={0.8}
-                    >
-                      <MaterialIcons name={REGION_ICONS[region] as any} size={13} color={active ? Colors.black : Colors.textSecondary} />
-                      <Text style={[styles.chipText, active && styles.chipTextActive]}>{region}</Text>
-                      <View style={[styles.chipBadge, active && styles.chipBadgeActive]}>
-                        <Text style={[styles.chipBadgeText, active && styles.chipBadgeTextActive]}>
-                          {regionCounts[region]}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-
-              {/* Country + Packages side-by-side */}
-              <View style={styles.serverALayout}>
-                {/* Country SectionList */}
-                <SectionList
-                  style={styles.countryList}
-                  sections={serverASections}
-                  keyExtractor={(item) => item.country_code}
-                  showsVerticalScrollIndicator={false}
-                  stickySectionHeadersEnabled={false}
-                  contentContainerStyle={{ paddingBottom: insets.bottom + 32, paddingTop: 4 }}
-                  renderSectionHeader={({ section }) => (
-                    <View style={styles.countrySectionHeader}>
-                      <MaterialIcons name={REGION_ICONS[section.region] as any} size={11} color={Colors.primary} />
-                      <Text style={styles.countrySectionTitle}>{section.region}</Text>
-                    </View>
-                  )}
-                  renderItem={({ item }) => {
-                    const active = selectedCountry?.country_code === item.country_code;
-                    return (
-                      <TouchableOpacity
-                        style={[styles.countryItem, active && styles.countryItemActive]}
-                        onPress={() => selectCountry(item)}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.countryFlag}>{getFlagEmoji(item.code)}</Text>
-                        <Text style={[styles.countryName, active && styles.countryNameActive]} numberOfLines={1}>
-                          {item.title}
-                        </Text>
-                        {active && <MaterialIcons name="chevron-right" size={14} color={Colors.primary} />}
-                      </TouchableOpacity>
-                    );
-                  }}
-                />
-
-                {/* Packages panel */}
-                <View style={styles.packagesPanel}>
-                  {!selectedCountry ? (
-                    <View style={styles.selectHint}>
-                      <MaterialIcons name="arrow-back" size={22} color={Colors.textMuted} />
-                      <Text style={styles.selectHintText}>Select a country to see available platforms</Text>
-                    </View>
-                  ) : loadingPackages ? (
-                    <View style={styles.selectHint}>
-                      <ActivityIndicator color={Colors.primary} />
-                      <Text style={[styles.selectHintText, { marginTop: 8 }]}>Loading platforms...</Text>
-                    </View>
-                  ) : countryPackages.length === 0 ? (
-                    <View style={styles.selectHint}>
-                      <MaterialIcons name="info-outline" size={22} color={Colors.textMuted} />
-                      <Text style={styles.selectHintText}>
-                        {packageError || `No platforms for ${selectedCountry.title}`}
-                      </Text>
-                    </View>
-                  ) : (
-                    <FlatList
-                      data={countryPackages}
-                      keyExtractor={(item) => item.project_code}
-                      showsVerticalScrollIndicator={false}
-                      contentContainerStyle={{ paddingBottom: insets.bottom + 32, paddingTop: 4 }}
-                      ListHeaderComponent={
-                        <View style={styles.packagesPanelHeader}>
-                          <Text style={styles.packagesPanelFlag}>{getFlagEmoji((selectedCountry as any).code)}</Text>
-                          <Text style={styles.packagesPanelTitle} numberOfLines={1}>{selectedCountry.title}</Text>
-                          <View style={styles.packagesPanelBadge}>
-                            <Text style={styles.packagesPanelBadgeText}>{countryPackages.length}</Text>
-                          </View>
-                        </View>
-                      }
-                      renderItem={({ item, index }) => (
-                        <PackageCard
-                          pkg={item}
-                          rank={index}
-                          onPress={() => openSheetPackage(selectedCountry, item)}
-                        />
-                      )}
-                    />
-                  )}
-                </View>
-              </View>
-            </>
-          )}
+          <TouchableOpacity
+            style={styles.switchUsBtn}
+            onPress={async () => { await Haptics.selectionAsync(); setProvider('server-b'); }}
+            activeOpacity={0.85}
+          >
+            <MaterialIcons name="flag" size={16} color={Colors.black} />
+            <Text style={styles.switchUsBtnText}>Browse US Numbers Instead</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -787,8 +676,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md, paddingHorizontal: Spacing.md, paddingVertical: 10,
   },
   providerTabActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryMuted },
-  providerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.textMuted },
-  providerDotActive: { backgroundColor: Colors.primary },
+
   providerTabLabel: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   providerTabLabelActive: { color: Colors.primary },
   providerTabDesc: { color: Colors.textMuted, fontSize: 10, marginTop: 1 },
@@ -816,20 +704,56 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center',
   },
   chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: Radius.full, paddingHorizontal: 14, paddingVertical: 9,
+    minHeight: 38,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  chipText: { color: Colors.textSecondary, fontSize: 12, fontWeight: FontWeight.medium },
-  chipTextActive: { color: Colors.black },
+  chipText: { color: Colors.textSecondary, fontSize: 13, fontWeight: FontWeight.semibold },
+  chipTextActive: { color: Colors.black, fontWeight: FontWeight.bold },
   chipBadge: {
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full,
-    paddingHorizontal: 5, paddingVertical: 1, minWidth: 20, alignItems: 'center',
+    paddingHorizontal: 6, paddingVertical: 2, minWidth: 22, alignItems: 'center',
   },
-  chipBadgeActive: { backgroundColor: 'rgba(0,0,0,0.18)' },
+  chipBadgeActive: { backgroundColor: 'rgba(0,0,0,0.20)' },
   chipBadgeText: { color: Colors.textMuted, fontSize: 10, fontWeight: FontWeight.bold },
   chipBadgeTextActive: { color: Colors.black },
+
+  // Coming soon (Server A)
+  comingSoonContainer: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: Spacing.xl, gap: Spacing.lg,
+  },
+  comingSoonCard: {
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.xl, padding: Spacing.xl, alignItems: 'center', gap: Spacing.md,
+    width: '100%',
+  },
+  comingSoonIconWrap: {
+    width: 72, height: 72, borderRadius: 36,
+    backgroundColor: Colors.primaryMuted, borderWidth: 1, borderColor: 'rgba(0,200,83,0.25)',
+    alignItems: 'center', justifyContent: 'center', marginBottom: 4,
+  },
+  comingSoonTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold },
+  comingSoonSub: {
+    color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'center',
+    lineHeight: 22,
+  },
+  comingSoonBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.primaryMuted, borderRadius: Radius.full,
+    paddingHorizontal: 14, paddingVertical: 7,
+    borderWidth: 1, borderColor: 'rgba(0,200,83,0.3)',
+    marginTop: 4,
+  },
+  comingSoonBadgeText: { color: Colors.primary, fontSize: 13, fontWeight: FontWeight.bold },
+  switchUsBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: Radius.md,
+    height: 52, width: '100%',
+  },
+  switchUsBtnText: { color: Colors.black, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
 
   // Section header (Server B)
   sectionHeader: {
