@@ -74,18 +74,44 @@ Deno.serve(async (req: Request) => {
 
     const paidAmount = Number(order.amount_paid);
 
-    // Mark order as expired first
-    const { error: expireErr } = await supabaseAdmin
+    // Atomically flip pending → expired, and verify we actually won the race.
+    // Using .select('id') so Supabase returns the rows that were actually modified.
+    // If the UPDATE touches 0 rows it means the status changed between our read and write
+    // (OTP arrived → 'completed', or another expire-order call got here first → 'expired').
+    // In both cases we must NOT credit the wallet.
+    const { data: flippedRows, error: expireErr } = await supabaseAdmin
       .from('orders')
       .update({ status: 'expired' })
       .eq('id', order_id)
-      .eq('status', 'pending'); // guard: only flip pending → expired
+      .eq('status', 'pending') // guard: only flip pending → expired
+      .select('id');
 
     if (expireErr) {
       console.error('expire-order: failed to expire order', expireErr);
       return new Response(JSON.stringify({ error: 'Failed to update order status' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 500,
+      });
+    }
+
+    // No rows flipped — status changed between our read and write.
+    // Re-read to surface the actual current status to the caller.
+    if (!flippedRows || flippedRows.length === 0) {
+      const { data: recheck } = await supabaseAdmin
+        .from('orders')
+        .select('status')
+        .eq('id', order_id)
+        .single();
+      const currentStatus = recheck?.status ?? 'unknown';
+      console.log(`expire-order: UPDATE touched 0 rows for order ${order_id} — current status: ${currentStatus}`);
+      // If it's 'completed' the OTP arrived; if 'expired' another call got here first.
+      // Either way: no wallet credit, no error.
+      return new Response(JSON.stringify({
+        refunded: false,
+        already_handled: true,
+        status: currentStatus,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 

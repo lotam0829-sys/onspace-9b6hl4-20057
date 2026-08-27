@@ -121,8 +121,19 @@ export default function NumberDisplayScreen() {
           const result = await res.json();
           if (result.refunded && result.refund_amount) {
             setRefundAmount(result.refund_amount);
-          } else if (result.already_expired) {
-            // Already handled — no double refund
+          } else if (result.already_handled || result.already_expired) {
+            // Status changed between our read and write on the server:
+            // either OTP arrived at the exact moment the timer fired ('completed')
+            // or another expire-order call got there first ('expired').
+            // If 'completed', re-load the order so the OTP is displayed.
+            if (result.status === 'completed') {
+              const fresh = await fetchOrder(order_id);
+              if (fresh) {
+                setOrder(fresh);
+                setExpired(false); // OTP actually arrived
+              }
+            }
+            // If 'expired', a previous call already handled the refund — nothing to do.
           } else {
             setRefundError(true);
           }
