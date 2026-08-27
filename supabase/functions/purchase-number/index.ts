@@ -37,37 +37,108 @@ Deno.serve(async (req: Request) => {
       project_name,
       country_name,
       amount_paid,
-      paystack_reference,  // Paystack transaction reference to verify payment
+      paystack_reference,  // present for card/bank payment path
+      use_wallet,          // true = debit wallet_balance directly, skip Paystack
     } = await req.json();
 
-    if (!provider_code || !country_code || !project_code || !paystack_reference) {
-      return new Response(JSON.stringify({ error: 'Missing required fields: provider_code, country_code, project_code, paystack_reference' }), {
+    if (!provider_code || !country_code || !project_code) {
+      return new Response(JSON.stringify({ error: 'Missing required fields: provider_code, country_code, project_code' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400,
+      });
+    }
+    if (!use_wallet && !paystack_reference) {
+      return new Response(JSON.stringify({ error: 'Provide paystack_reference or set use_wallet: true' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 400,
       });
     }
 
-    // Verify Paystack payment
-    console.log('Verifying Paystack payment:', paystack_reference);
-    const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY');
-    const verifyRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${paystack_reference}`, {
-      headers: {
-        'Authorization': `Bearer ${secretKey}`,
-        'Content-Type': 'application/json',
-      },
-    });
+    let paidAmount: number;
 
-    const verifyData = await verifyRes.json();
-    console.log('Paystack verify response:', JSON.stringify(verifyData));
+    if (use_wallet) {
+      // ── WALLET PATH: debit wallet_balance up front ────────────────────────
+      paidAmount = Number(amount_paid);
+      if (!paidAmount || paidAmount <= 0) {
+        return new Response(JSON.stringify({ error: 'Invalid amount_paid for wallet purchase' }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 400,
+        });
+      }
 
-    if (!verifyData.status || verifyData.data?.status !== 'success') {
-      return new Response(JSON.stringify({ error: 'Payment not confirmed. Please try again.' }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 402,
+      const { data: profile, error: profileErr } = await supabaseAdmin
+        .from('user_profiles')
+        .select('wallet_balance')
+        .eq('id', user.id)
+        .single();
+
+      if (profileErr || !profile) {
+        return new Response(JSON.stringify({ error: 'Could not read wallet balance' }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 500,
+        });
+      }
+
+      const currentBalance = Number(profile.wallet_balance);
+      if (currentBalance < paidAmount) {
+        return new Response(JSON.stringify({
+          error: `Insufficient wallet balance. Available: ₦${currentBalance.toLocaleString()}, required: ₦${paidAmount.toLocaleString()}.`,
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 402,
+        });
+      }
+
+      const newBalance = currentBalance - paidAmount;
+      const { error: debitErr } = await supabaseAdmin
+        .from('user_profiles')
+        .update({ wallet_balance: newBalance })
+        .eq('id', user.id);
+
+      if (debitErr) {
+        console.error('Wallet debit error:', debitErr);
+        return new Response(JSON.stringify({ error: 'Failed to debit wallet. Please try again.' }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 500,
+        });
+      }
+
+      // Record the debit transaction now (before Socially call — rolled back below if needed)
+      const walletRef = `wlt_${user.id.slice(0, 8)}_${Date.now()}`;
+      await supabaseAdmin.from('transactions').insert({
+        user_id: user.id,
+        amount: paidAmount,
+        type: 'debit',
+        reference: walletRef,
+        description: `${project_name || project_code} number - ${country_name || country_code} (wallet)`,
       });
-    }
 
-    const paidAmount = verifyData.data.amount / 100; // kobo to naira
+      console.log(`Wallet debited: ₦${paidAmount} from user ${user.id}, new balance: ${newBalance}`);
+      // ─────────────────────────────────────────────────────────────────────
+    } else {
+      // ── PAYSTACK PATH: verify payment ─────────────────────────────────────
+      console.log('Verifying Paystack payment:', paystack_reference);
+      const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY');
+      const verifyRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${paystack_reference}`, {
+        headers: {
+          'Authorization': `Bearer ${secretKey}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const verifyData = await verifyRes.json();
+      console.log('Paystack verify response:', JSON.stringify(verifyData));
+
+      if (!verifyData.status || verifyData.data?.status !== 'success') {
+        return new Response(JSON.stringify({ error: 'Payment not confirmed. Please try again.' }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 402,
+        });
+      }
+
+      paidAmount = verifyData.data.amount / 100; // kobo to naira
+      // ─────────────────────────────────────────────────────────────────────
+    }
 
     // Generate a unique reference for Socially.ng
     const sociallyReference = `nv_${user.id.slice(0, 8)}_${Date.now()}`;
@@ -109,32 +180,39 @@ Deno.serve(async (req: Request) => {
         (typeof sociallyData === 'string' ? sociallyData : null) ||
         'Failed to purchase number from provider';
 
-      // ── REFUND: Socially purchase failed after payment was taken ──────────
-      console.log(`Socially purchase failed. Refunding ₦${paidAmount} to user ${user.id}`);
+      // ── REFUND/ROLLBACK: Socially purchase failed after payment was taken ──
+      // Wallet path: pure DB credit rollback. Paystack path: credit wallet so customer can retry.
+      console.log(`Socially purchase failed. Refunding ₦${paidAmount} to user ${user.id} (wallet: ${use_wallet})`);
       try {
-        const { data: profile } = await supabaseAdmin
+        const { data: profileNow } = await supabaseAdmin
           .from('user_profiles')
           .select('wallet_balance')
           .eq('id', user.id)
           .single();
 
-        const newBalance = Number(profile?.wallet_balance || 0) + paidAmount;
+        const newBalance = Number(profileNow?.wallet_balance || 0) + paidAmount;
         await supabaseAdmin
           .from('user_profiles')
           .update({ wallet_balance: newBalance })
           .eq('id', user.id);
 
+        const refundRef = use_wallet
+          ? `rollback_${user.id.slice(0, 8)}_${Date.now()}`
+          : (paystack_reference || `refund_${Date.now()}`);
+
         await supabaseAdmin.from('transactions').insert({
           user_id: user.id,
           amount: paidAmount,
           type: 'credit',
-          reference: paystack_reference,
-          description: `Refund: ${project_name || project_code} purchase failed — ${sociallyError}`,
+          reference: refundRef,
+          description: use_wallet
+            ? `Wallet rollback: ${project_name || project_code} purchase failed — ${sociallyError}`
+            : `Refund: ${project_name || project_code} purchase failed — ${sociallyError}`,
         });
 
-        console.log(`Refund credited: ₦${paidAmount} → user ${user.id}, new balance: ${newBalance}`);
+        console.log(`Refund/rollback credited: ₦${paidAmount} → user ${user.id}, new balance: ${newBalance}`);
       } catch (refundErr) {
-        console.error('CRITICAL: Refund step failed after Socially error:', refundErr);
+        console.error('CRITICAL: Refund/rollback step failed after Socially error:', refundErr);
       }
       // ──────────────────────────────────────────────────────────────────────
 
@@ -174,17 +252,15 @@ Deno.serve(async (req: Request) => {
 
     if (orderError) {
       console.error('Order insert error:', orderError);
-      // ── REFUND: DB save failed after number was purchased ─────────────────
-      // Number was already allocated by Socially — refund the charge since we
-      // cannot track this order and the customer cannot use an unrecorded number.
+      // ── REFUND/ROLLBACK: DB save failed after number was purchased ─────────
       try {
-        const { data: profile } = await supabaseAdmin
+        const { data: profileNow2 } = await supabaseAdmin
           .from('user_profiles')
           .select('wallet_balance')
           .eq('id', user.id)
           .single();
 
-        const newBalance = Number(profile?.wallet_balance || 0) + paidAmount;
+        const newBalance = Number(profileNow2?.wallet_balance || 0) + paidAmount;
         await supabaseAdmin
           .from('user_profiles')
           .update({ wallet_balance: newBalance })
@@ -194,29 +270,33 @@ Deno.serve(async (req: Request) => {
           user_id: user.id,
           amount: paidAmount,
           type: 'credit',
-          reference: paystack_reference,
-          description: `Refund: order save failed for ${project_name || project_code}`,
+          reference: paystack_reference || `rollback_${user.id.slice(0, 8)}_${Date.now()}`,
+          description: use_wallet
+            ? `Wallet rollback: order save failed for ${project_name || project_code}`
+            : `Refund: order save failed for ${project_name || project_code}`,
         });
 
-        console.log(`Refund credited (order save failure): ₦${paidAmount} → user ${user.id}`);
+        console.log(`Refund/rollback credited (order save failure): ₦${paidAmount} → user ${user.id}`);
       } catch (refundErr) {
-        console.error('CRITICAL: Refund step failed after order insert error:', refundErr);
+        console.error('CRITICAL: Refund/rollback step failed after order insert error:', refundErr);
       }
       // ──────────────────────────────────────────────────────────────────────
-      return new Response(JSON.stringify({ error: 'Failed to save order', refunded: true }), {
+      return new Response(JSON.stringify({ error: 'Failed to save order', refunded: true, refund_amount: paidAmount }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 500,
       });
     }
 
-    // Record transaction
-    await supabaseAdmin.from('transactions').insert({
-      user_id: user.id,
-      amount: paidAmount,
-      type: 'debit',
-      reference: paystack_reference,
-      description: `${project_name || project_code} number - ${country_name || country_code}`,
-    });
+    // Record debit transaction for Paystack path only (wallet path recorded its debit above)
+    if (!use_wallet) {
+      await supabaseAdmin.from('transactions').insert({
+        user_id: user.id,
+        amount: paidAmount,
+        type: 'debit',
+        reference: paystack_reference,
+        description: `${project_name || project_code} number - ${country_name || country_code}`,
+      });
+    }
 
     return new Response(JSON.stringify({
       data: {

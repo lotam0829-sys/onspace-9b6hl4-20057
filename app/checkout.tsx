@@ -10,6 +10,7 @@ import { WebView } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert } from '@/template';
 import { useOrders } from '@/hooks/useOrders';
+import { useWallet } from '@/hooks/useWallet';
 import { initializePayment, purchaseNumber } from '@/services/paystackService';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { PLATFORM_ICONS } from '@/constants/config';
@@ -19,6 +20,7 @@ export default function CheckoutScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { refreshOrders } = useOrders();
+  const { walletBalance, refreshProfile } = useWallet();
   const { showAlert } = useAlert();
 
   const params = useLocalSearchParams<{
@@ -54,23 +56,27 @@ export default function CheckoutScreen() {
     return { message: msg };
   };
 
-  const executePurchase = async (reference: string) => {
+  const executePurchase = async (reference: string | null, fromWallet: boolean) => {
     setPurchaseError(null);
     setPurchaseStage('purchasing');
     setLoading(true);
     try {
       const data = await purchaseNumber({
         provider_code: params.provider_code,
-        country_code: params.country_code,  // string — pass as-is for Server B
+        country_code: params.country_code,
         project_code: params.project_code,
         project_name: params.project_name,
         country_name: params.country_name,
         amount_paid: price,
-        paystack_reference: reference,
+        ...(fromWallet
+          ? { use_wallet: true }
+          : { paystack_reference: reference! }
+        ),
       });
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       await refreshOrders();
+      await refreshProfile();
 
       const orderId = data?.data?.order?.id;
       if (orderId) {
@@ -82,7 +88,9 @@ export default function CheckoutScreen() {
       // If the server refunded the charge, surface that clearly
       if (e.refunded) {
         const amt = e.refund_amount ?? price;
-        parsed.hint = `Your payment of \u20a6${Number(amt).toLocaleString()} has been refunded to your wallet.`;
+        parsed.hint = fromWallet
+          ? `\u20a6${Number(amt).toLocaleString()} has been returned to your wallet balance.`
+          : `Your payment of \u20a6${Number(amt).toLocaleString()} has been refunded to your wallet.`;
       }
       setPurchaseError(parsed);
     } finally {
@@ -94,6 +102,18 @@ export default function CheckoutScreen() {
   const handlePay = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setPurchaseError(null);
+
+    // ── Wallet-first: skip Paystack entirely if balance covers the price ──
+    if (walletBalance >= price) {
+      setPurchaseStage('purchasing');
+      setLoading(true);
+      await executePurchase(null, true);
+      setLoading(false);
+      setPurchaseStage('idle');
+      return;
+    }
+
+    // ── Paystack charge ──
     setPurchaseStage('paying');
     setLoading(true);
     try {
@@ -115,17 +135,21 @@ export default function CheckoutScreen() {
     if (url.includes('numvault.app/payment/callback') || url.includes('paystack.com/close')) {
       setWebViewUrl(null);
       if (paystackRef) {
-        setTimeout(() => executePurchase(paystackRef), 1500);
+        setTimeout(() => executePurchase(paystackRef, false), 1500);
       } else {
         setPurchaseError({ message: 'Payment reference lost. Contact support.' });
       }
     }
   };
 
+  const payBtnLabel = walletBalance >= price
+    ? `Pay \u20a6${price.toLocaleString()} from Wallet`
+    : `Pay \u20a6${price.toLocaleString()}`;
+
   const stageLabel = purchaseStage === 'paying'
     ? 'Opening payment...'
     : purchaseStage === 'purchasing'
-    ? 'Securing your number...'
+    ? (walletBalance >= price ? 'Paying from wallet...' : 'Securing your number...')
     : null;
 
   return (
@@ -151,6 +175,16 @@ export default function CheckoutScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 120 }]}
       >
+        {/* ── Wallet balance banner (if sufficient) ── */}
+        {walletBalance >= price && (
+          <View style={styles.walletBanner}>
+            <MaterialIcons name="account-balance-wallet" size={16} color={Colors.primary} />
+            <Text style={styles.walletBannerText}>
+              Wallet balance: <Text style={styles.walletBannerAmount}>₦{walletBalance.toLocaleString()}</Text> — this purchase will be deducted instantly.
+            </Text>
+          </View>
+        )}
+
         {/* ── Order card ── */}
         <View style={styles.orderCard}>
           {/* Platform row */}
@@ -186,7 +220,8 @@ export default function CheckoutScreen() {
           </View>
         </View>
 
-        {/* ── Payment methods ── */}
+        {/* ── Payment methods (only shown when wallet doesn't cover the price) ── */}
+        {walletBalance < price && (
         <View style={styles.methodsCard}>
           <Text style={styles.methodsTitle}>Pay with</Text>
           <View style={styles.methodsList}>
@@ -209,6 +244,7 @@ export default function CheckoutScreen() {
             <Text style={styles.secureText}>Secured by Paystack · 256-bit TLS encryption</Text>
           </View>
         </View>
+        )}
 
         {/* ── Error banner ── */}
         {purchaseError && (
@@ -264,8 +300,8 @@ export default function CheckoutScreen() {
             </View>
           ) : (
             <>
-              <MaterialIcons name="payment" size={20} color={Colors.black} />
-              <Text style={styles.payBtnText}>Pay ₦{price.toLocaleString()}</Text>
+              <MaterialIcons name={walletBalance >= price ? 'account-balance-wallet' : 'payment'} size={20} color={Colors.black} />
+              <Text style={styles.payBtnText}>{payBtnLabel}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -390,6 +426,20 @@ const styles = StyleSheet.create({
     borderTopColor: Colors.surfaceBorder,
   },
   secureText: { color: Colors.textMuted, fontSize: 11 },
+
+  // Wallet banner
+  walletBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.primaryMuted,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+  },
+  walletBannerText: { flex: 1, color: Colors.textSecondary, fontSize: FontSize.xs, lineHeight: 18 },
+  walletBannerAmount: { color: Colors.primary, fontWeight: FontWeight.bold },
 
   // Error banner
   errorBanner: {

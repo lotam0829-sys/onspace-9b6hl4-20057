@@ -48,7 +48,7 @@ export async function initializePayment(
   return invokeWithAuth('wallet-topup', { email, amount, type, metadata });
 }
 
-/** Purchase a number after Paystack payment has been confirmed. */
+/** Purchase a number. Pass paystack_reference after a card/bank payment, or use_wallet: true to spend from wallet balance. */
 export async function purchaseNumber(params: {
   provider_code: string;
   country_code: string;   // string for Server B (service code like "tiktok")
@@ -56,7 +56,8 @@ export async function purchaseNumber(params: {
   project_name: string;
   country_name: string;
   amount_paid: number;
-  paystack_reference: string;
+  paystack_reference?: string;
+  use_wallet?: boolean;
 }) {
   return invokeWithAuth('purchase-number', params);
 }
