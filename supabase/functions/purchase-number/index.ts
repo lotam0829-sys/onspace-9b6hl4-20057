@@ -57,7 +57,7 @@ Deno.serve(async (req: Request) => {
     let paidAmount: number;
 
     if (use_wallet) {
-      // ── WALLET PATH: debit wallet_balance up front ────────────────────────
+      // ── WALLET PATH: atomic debit via RPC (prevents double-spend on concurrent taps) ──
       paidAmount = Number(amount_paid);
       if (!paidAmount || paidAmount <= 0) {
         return new Response(JSON.stringify({ error: 'Invalid amount_paid for wallet purchase' }), {
@@ -66,42 +66,33 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      const { data: profile, error: profileErr } = await supabaseAdmin
-        .from('user_profiles')
-        .select('wallet_balance')
-        .eq('id', user.id)
-        .single();
+      // debit_wallet() does UPDATE ... WHERE wallet_balance >= p_amount RETURNING wallet_balance
+      // — raises INSUFFICIENT_BALANCE if balance is too low, preventing any race condition.
+      const { data: newBalanceRow, error: debitRpcErr } = await supabaseAdmin
+        .rpc('debit_wallet', { p_user_id: user.id, p_amount: paidAmount });
 
-      if (profileErr || !profile) {
-        return new Response(JSON.stringify({ error: 'Could not read wallet balance' }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 500,
-        });
-      }
-
-      const currentBalance = Number(profile.wallet_balance);
-      if (currentBalance < paidAmount) {
-        return new Response(JSON.stringify({
-          error: `Insufficient wallet balance. Available: ₦${currentBalance.toLocaleString()}, required: ₦${paidAmount.toLocaleString()}.`,
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 402,
-        });
-      }
-
-      const newBalance = currentBalance - paidAmount;
-      const { error: debitErr } = await supabaseAdmin
-        .from('user_profiles')
-        .update({ wallet_balance: newBalance })
-        .eq('id', user.id);
-
-      if (debitErr) {
-        console.error('Wallet debit error:', debitErr);
+      if (debitRpcErr) {
+        const isInsufficient = debitRpcErr.message?.includes('INSUFFICIENT_BALANCE');
+        if (isInsufficient) {
+          // Re-read actual balance to give a helpful message
+          const { data: profileCheck } = await supabaseAdmin
+            .from('user_profiles').select('wallet_balance').eq('id', user.id).single();
+          const available = profileCheck?.wallet_balance ?? 0;
+          return new Response(JSON.stringify({
+            error: `Insufficient wallet balance. Available: ₦${Number(available).toLocaleString()}, required: ₦${paidAmount.toLocaleString()}.`,
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 402,
+          });
+        }
+        console.error('Wallet debit RPC error:', debitRpcErr);
         return new Response(JSON.stringify({ error: 'Failed to debit wallet. Please try again.' }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           status: 500,
         });
       }
+
+      const newBalance = Number(newBalanceRow);
 
       // Record the debit transaction now (before Socially call — rolled back below if needed)
       const walletRef = `wlt_${user.id.slice(0, 8)}_${Date.now()}`;

@@ -1,0 +1,161 @@
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { corsHeaders, handleCors } from '../_shared/cors.ts';
+
+Deno.serve(async (req: Request) => {
+  const corsRes = handleCors(req);
+  if (corsRes) return corsRes;
+
+  try {
+    const authHeader = req.headers.get('Authorization');
+    const token = authHeader?.replace('Bearer ', '');
+
+    const supabaseAdmin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    );
+
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: `Bearer ${token}` } } }
+    );
+
+    // Verify the caller is authenticated
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser(token);
+    if (userError || !user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 401,
+      });
+    }
+
+    const { order_id } = await req.json();
+    if (!order_id) {
+      return new Response(JSON.stringify({ error: 'order_id is required' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400,
+      });
+    }
+
+    // Fetch the order — must belong to this user and still be pending
+    const { data: order, error: orderErr } = await supabaseAdmin
+      .from('orders')
+      .select('id, user_id, amount_paid, status, project_name, order_reference')
+      .eq('id', order_id)
+      .single();
+
+    if (orderErr || !order) {
+      console.error('expire-order: order not found', orderErr);
+      return new Response(JSON.stringify({ error: 'Order not found' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 404,
+      });
+    }
+
+    // Only the owning user may expire their own order
+    if (order.user_id !== user.id) {
+      return new Response(JSON.stringify({ error: 'Forbidden' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 403,
+      });
+    }
+
+    // Idempotency: already expired — just return success with no double-refund
+    if (order.status !== 'pending') {
+      console.log(`expire-order: order ${order_id} already in status '${order.status}', skipping refund`);
+      return new Response(JSON.stringify({
+        refunded: false,
+        already_expired: true,
+        status: order.status,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const paidAmount = Number(order.amount_paid);
+
+    // Mark order as expired first
+    const { error: expireErr } = await supabaseAdmin
+      .from('orders')
+      .update({ status: 'expired' })
+      .eq('id', order_id)
+      .eq('status', 'pending'); // guard: only flip pending → expired
+
+    if (expireErr) {
+      console.error('expire-order: failed to expire order', expireErr);
+      return new Response(JSON.stringify({ error: 'Failed to update order status' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 500,
+      });
+    }
+
+    // Credit wallet_balance — fetch current balance then increment
+    const { data: profileNow, error: profileErr } = await supabaseAdmin
+      .from('user_profiles')
+      .select('wallet_balance')
+      .eq('id', user.id)
+      .single();
+
+    if (profileErr || !profileNow) {
+      console.error('expire-order: could not read wallet balance', profileErr);
+      // Order is already expired — don't fail the whole call, just log
+      return new Response(JSON.stringify({
+        refunded: false,
+        expired: true,
+        error: 'Could not credit wallet — contact support',
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 207,
+      });
+    }
+
+    const newBalance = Number(profileNow.wallet_balance) + paidAmount;
+    const { error: creditErr } = await supabaseAdmin
+      .from('user_profiles')
+      .update({ wallet_balance: newBalance })
+      .eq('id', user.id);
+
+    if (creditErr) {
+      console.error('expire-order: wallet credit failed', creditErr);
+      return new Response(JSON.stringify({
+        refunded: false,
+        expired: true,
+        error: 'Order expired but wallet credit failed — contact support',
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 207,
+      });
+    }
+
+    // Insert refund transaction record
+    const refundRef = order.order_reference
+      ? `timeout_${order.order_reference}`
+      : `timeout_${order_id.slice(0, 8)}_${Date.now()}`;
+
+    await supabaseAdmin.from('transactions').insert({
+      user_id: user.id,
+      amount: paidAmount,
+      type: 'credit',
+      reference: refundRef,
+      description: `Auto-refund: ${order.project_name || 'Purchase'} OTP not received within window`,
+    });
+
+    console.log(`expire-order: refunded ₦${paidAmount} to user ${user.id} for order ${order_id}`);
+
+    return new Response(JSON.stringify({
+      refunded: true,
+      refund_amount: paidAmount,
+      new_balance: newBalance,
+      status: 'expired',
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+
+  } catch (err) {
+    console.error('expire-order unhandled error:', err);
+    return new Response(JSON.stringify({ error: err.message }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 500,
+    });
+  }
+});

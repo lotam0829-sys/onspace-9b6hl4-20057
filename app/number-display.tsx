@@ -8,7 +8,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAlert } from '@/template';
-import { fetchOrder, updateOrderExpired, Order } from '@/services/orderService';
+import { fetchOrder, Order } from '@/services/orderService';
 import { requestNotificationPermissions, sendOTPReceivedNotification } from '@/services/notificationService';
 import { getSupabaseClient } from '@/template';
 import { getOTP } from '@/services/sociallyService';
@@ -31,6 +31,8 @@ export default function NumberDisplayScreen() {
   const [copiedRef, setCopiedRef] = useState(false);
   const [requestingOTP, setRequestingOTP] = useState(false);
   const [otpRequested, setOtpRequested] = useState(false);
+  const [refundAmount, setRefundAmount] = useState<number | null>(null);
+  const [refundError, setRefundError] = useState(false);
 
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -102,8 +104,32 @@ export default function NumberDisplayScreen() {
         clearInterval(timerRef.current!);
         clearInterval(pollRef.current!);
         setExpired(true);
-        await updateOrderExpired(order_id);
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        // Call server-side expire-order function: sets status=expired AND credits wallet
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          const token = session?.access_token;
+          const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+          const res = await fetch(`${supabaseUrl}/functions/v1/expire-order`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+            body: JSON.stringify({ order_id }),
+          });
+          const result = await res.json();
+          if (result.refunded && result.refund_amount) {
+            setRefundAmount(result.refund_amount);
+          } else if (result.already_expired) {
+            // Already handled — no double refund
+          } else {
+            setRefundError(true);
+          }
+        } catch (e) {
+          console.error('expire-order call failed:', e);
+          setRefundError(true);
+        }
       }
     }, 1000);
   };
@@ -296,7 +322,7 @@ export default function NumberDisplayScreen() {
           <View style={styles.nbRow}>
             <Text style={styles.nbLabel}>NB : </Text>
             <Text style={styles.nbText}>
-              You will be refunded automatically if you do not receive any OTP after 5 minutes
+              If no OTP is received before the timer runs out, your payment is automatically refunded to your wallet.
             </Text>
           </View>
 
@@ -306,9 +332,19 @@ export default function NumberDisplayScreen() {
           )}
 
           {expired && !otpReceived && (
-            <View style={styles.expiredBox}>
-              <MaterialIcons name="schedule" size={18} color={Colors.error} />
-              <Text style={styles.expiredText}>Window expired. Contact support for a refund.</Text>
+            <View style={[styles.expiredBox, refundAmount ? styles.expiredBoxRefunded : null]}>
+              <MaterialIcons
+                name={refundAmount ? 'account-balance-wallet' : 'schedule'}
+                size={18}
+                color={refundAmount ? Colors.success : Colors.error}
+              />
+              <Text style={[styles.expiredText, refundAmount ? { color: Colors.success } : null]}>
+                {refundAmount
+                  ? `₦${Number(refundAmount).toLocaleString()} has been refunded to your wallet.`
+                  : refundError
+                  ? 'OTP window expired. Refund pending — contact support if not received within 24 hours.'
+                  : 'OTP window expired. Processing refund...'}
+              </Text>
             </View>
           )}
 
@@ -367,7 +403,7 @@ export default function NumberDisplayScreen() {
         </View>
 
         {/* Support button when expired */}
-        {expired && !otpReceived && (
+        {expired && !otpReceived && refundError && (
           <TouchableOpacity
             style={styles.supportBtn}
             onPress={async () => {
@@ -598,6 +634,11 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
     borderRadius: Radius.md,
     padding: Spacing.md,
+  },
+  expiredBoxRefunded: {
+    backgroundColor: Colors.primaryMuted,
+    borderWidth: 1,
+    borderColor: Colors.success,
   },
   expiredText: { flex: 1, color: Colors.error, fontSize: FontSize.xs, lineHeight: 18 },
 
