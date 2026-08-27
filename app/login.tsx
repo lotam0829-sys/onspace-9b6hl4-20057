@@ -8,8 +8,38 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useAuth, useAlert } from '@/template';
+import { useAuth, useAlert, getSupabaseClient } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+
+/**
+ * Waits up to ~2.4 s for the Supabase session to become active after verifyOtp.
+ * verifyOtp resolves before the onAuthStateChange SIGNED_IN event fires, so
+ * calling updateUser immediately can fail with "Auth session missing".
+ */
+async function waitForSession(maxAttempts = 8, intervalMs = 300): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  for (let i = 0; i < maxAttempts; i++) {
+    const { data } = await supabase.auth.getSession();
+    if (data?.session?.access_token) return true;
+    await new Promise<void>(r => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
+/**
+ * Calls supabase.auth.updateUser({ password }) with one automatic retry.
+ * Returns null on success, or an error message string on failure.
+ */
+async function setPasswordWithRetry(password: string): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const { error } = await supabase.auth.updateUser({ password });
+    if (!error) return null;
+    console.warn(`[NumVault] updateUser attempt ${attempt} failed: ${error.message}`);
+    if (attempt < 2) await new Promise<void>(r => setTimeout(r, 600));
+  }
+  return 'Your account was created but your password could not be saved. Please use Forgot Password to set a new password before signing in.';
+}
 
 type Mode = 'login' | 'register';
 
@@ -57,10 +87,37 @@ export default function LoginScreen() {
       return;
     }
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const { error } = await verifyOTPAndLogin(email.trim().toLowerCase(), otp, { password });
-    if (error) {
+
+    // Step 1: Verify OTP — do NOT pass password here; the template's built-in
+    // updateUser call runs without waiting for the session and silently ignores
+    // failures, leaving the account with no working password.
+    const { error: verifyError } = await verifyOTPAndLogin(email.trim().toLowerCase(), otp);
+    if (verifyError) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      showAlert('Registration Failed', error);
+      showAlert('Registration Failed', verifyError);
+      return;
+    }
+
+    // Step 2: Wait for the Supabase session that verifyOtp establishes to become
+    // fully active before calling updateUser. Without this wait, updateUser hits
+    // a timing race and fails with "Auth session missing".
+    const sessionReady = await waitForSession();
+    if (!sessionReady) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      showAlert(
+        'Password Not Saved',
+        'Your account was verified but the session did not start in time. Please sign in with an email code and then update your password in Profile.'
+      );
+      return;
+    }
+
+    // Step 3: Set the password with one automatic retry.
+    const passwordError = await setPasswordWithRetry(password);
+    if (passwordError) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      showAlert('Password Not Saved', passwordError);
+      // Do NOT return here — the account is created and the session is live.
+      // AuthRouter will redirect to the app; the user just needs to reset their password.
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
