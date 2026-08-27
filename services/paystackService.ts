@@ -14,15 +14,25 @@ async function invokeWithAuth(fn: string, body: Record<string, unknown>) {
 
   if (error) {
     let msg = error.message;
+    let refunded = false;
+    let refundAmount: number | undefined;
     if (error instanceof FunctionsHttpError) {
       try {
         const txt = await error.context?.text?.();
         if (txt) {
-          try { msg = JSON.parse(txt).error || txt; } catch { msg = txt; }
+          try {
+            const parsed = JSON.parse(txt);
+            msg = parsed.error || txt;
+            refunded = !!parsed.refunded;
+            refundAmount = parsed.refund_amount;
+          } catch { msg = txt; }
         }
       } catch {}
     }
-    throw new Error(msg);
+    const err: any = new Error(msg);
+    err.refunded = refunded;
+    err.refund_amount = refundAmount;
+    throw err;
   }
 
   return data;

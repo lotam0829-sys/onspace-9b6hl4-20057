@@ -109,7 +109,40 @@ Deno.serve(async (req: Request) => {
         (typeof sociallyData === 'string' ? sociallyData : null) ||
         'Failed to purchase number from provider';
 
-      return new Response(JSON.stringify({ error: `Socially: ${sociallyError}` }), {
+      // ── REFUND: Socially purchase failed after payment was taken ──────────
+      console.log(`Socially purchase failed. Refunding ₦${paidAmount} to user ${user.id}`);
+      try {
+        const { data: profile } = await supabaseAdmin
+          .from('user_profiles')
+          .select('wallet_balance')
+          .eq('id', user.id)
+          .single();
+
+        const newBalance = Number(profile?.wallet_balance || 0) + paidAmount;
+        await supabaseAdmin
+          .from('user_profiles')
+          .update({ wallet_balance: newBalance })
+          .eq('id', user.id);
+
+        await supabaseAdmin.from('transactions').insert({
+          user_id: user.id,
+          amount: paidAmount,
+          type: 'credit',
+          reference: paystack_reference,
+          description: `Refund: ${project_name || project_code} purchase failed — ${sociallyError}`,
+        });
+
+        console.log(`Refund credited: ₦${paidAmount} → user ${user.id}, new balance: ${newBalance}`);
+      } catch (refundErr) {
+        console.error('CRITICAL: Refund step failed after Socially error:', refundErr);
+      }
+      // ──────────────────────────────────────────────────────────────────────
+
+      return new Response(JSON.stringify({
+        error: `Socially: ${sociallyError}`,
+        refunded: true,
+        refund_amount: paidAmount,
+      }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 500,
       });
@@ -141,7 +174,36 @@ Deno.serve(async (req: Request) => {
 
     if (orderError) {
       console.error('Order insert error:', orderError);
-      return new Response(JSON.stringify({ error: 'Failed to save order' }), {
+      // ── REFUND: DB save failed after number was purchased ─────────────────
+      // Number was already allocated by Socially — refund the charge since we
+      // cannot track this order and the customer cannot use an unrecorded number.
+      try {
+        const { data: profile } = await supabaseAdmin
+          .from('user_profiles')
+          .select('wallet_balance')
+          .eq('id', user.id)
+          .single();
+
+        const newBalance = Number(profile?.wallet_balance || 0) + paidAmount;
+        await supabaseAdmin
+          .from('user_profiles')
+          .update({ wallet_balance: newBalance })
+          .eq('id', user.id);
+
+        await supabaseAdmin.from('transactions').insert({
+          user_id: user.id,
+          amount: paidAmount,
+          type: 'credit',
+          reference: paystack_reference,
+          description: `Refund: order save failed for ${project_name || project_code}`,
+        });
+
+        console.log(`Refund credited (order save failure): ₦${paidAmount} → user ${user.id}`);
+      } catch (refundErr) {
+        console.error('CRITICAL: Refund step failed after order insert error:', refundErr);
+      }
+      // ──────────────────────────────────────────────────────────────────────
+      return new Response(JSON.stringify({ error: 'Failed to save order', refunded: true }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 500,
       });

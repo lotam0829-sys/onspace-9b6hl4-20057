@@ -78,7 +78,13 @@ export default function CheckoutScreen() {
       }
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setPurchaseError(parsePurchaseError(e.message || 'Purchase failed. Please try again.'));
+      const parsed = parsePurchaseError(e.message || 'Purchase failed. Please try again.');
+      // If the server refunded the charge, surface that clearly
+      if (e.refunded) {
+        const amt = e.refund_amount ?? price;
+        parsed.hint = `Your payment of \u20a6${Number(amt).toLocaleString()} has been refunded to your wallet.`;
+      }
+      setPurchaseError(parsed);
     } finally {
       setLoading(false);
       setPurchaseStage('idle');
