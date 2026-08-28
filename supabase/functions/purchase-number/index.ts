@@ -7,10 +7,35 @@ const PAYSTACK_BASE = 'https://api.paystack.co';
 // Transfers are fired non-blocking after every successful purchase.
 // Cost = revenue ÷ 1.4  (71.43% of amount paid, i.e. the pre-markup price).
 // Recipient code is resolved once and cached in-memory for the function lifetime.
-const SOCIALLY_BANK_CODE = '999111';   // Palmpay bank code on Paystack
+// Bank code is resolved dynamically from Paystack's /bank list (never hardcoded).
 const SOCIALLY_ACCOUNT_NUMBER = '6635796668';
 const SOCIALLY_ACCOUNT_NAME = 'Riteweb Digital Services-Sim(Paymentpoint)';
 let cachedRecipientCode: string | null = null;
+
+/**
+ * Look up Palmpay's current bank_code from Paystack's /bank list.
+ * Searches case-insensitively for any bank whose name contains "palmpay".
+ * Throws if not found so the failure is logged rather than silently using a wrong code.
+ */
+async function getPalmpayBankCode(secretKey: string): Promise<string> {
+  const res = await fetch(`${PAYSTACK_BASE}/bank?currency=NGN&perPage=200`, {
+    headers: { 'Authorization': `Bearer ${secretKey}` },
+  });
+  const data = await res.json();
+  if (!data.status || !Array.isArray(data.data)) {
+    throw new Error(`Paystack /bank list failed: ${JSON.stringify(data)}`);
+  }
+  const match = data.data.find(
+    (b: { name: string; code: string }) => b.name.toLowerCase().includes('palmpay')
+  );
+  if (!match) {
+    // Log all banks to help debug if Palmpay is listed under a different name
+    const names = data.data.map((b: { name: string; code: string }) => `${b.name} (${b.code})`).join(', ');
+    throw new Error(`Palmpay not found in Paystack bank list. Available banks: ${names.slice(0, 500)}`);
+  }
+  console.log(`Resolved Palmpay bank_code: ${match.code} ("${match.name}")`);
+  return match.code;
+}
 
 /**
  * Resolve or create a Paystack Transfer Recipient for the Socially.ng account.
@@ -31,12 +56,14 @@ async function getSociallyRecipientCode(secretKey: string): Promise<string> {
         r.details?.account_number === SOCIALLY_ACCOUNT_NUMBER
     );
     if (existing?.recipient_code) {
+      console.log(`Reusing existing transfer recipient: ${existing.recipient_code}`);
       cachedRecipientCode = existing.recipient_code;
       return cachedRecipientCode!;
     }
   }
 
-  // Not found — create it
+  // Not found — resolve bank code dynamically then create recipient
+  const bankCode = await getPalmpayBankCode(secretKey);
   const createRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
     method: 'POST',
     headers: {
@@ -47,7 +74,7 @@ async function getSociallyRecipientCode(secretKey: string): Promise<string> {
       type: 'nuban',
       name: SOCIALLY_ACCOUNT_NAME,
       account_number: SOCIALLY_ACCOUNT_NUMBER,
-      bank_code: SOCIALLY_BANK_CODE,
+      bank_code: bankCode,
       currency: 'NGN',
     }),
   });
@@ -55,6 +82,7 @@ async function getSociallyRecipientCode(secretKey: string): Promise<string> {
   if (!createData.status || !createData.data?.recipient_code) {
     throw new Error(`Failed to create transfer recipient: ${JSON.stringify(createData)}`);
   }
+  console.log(`Created new transfer recipient: ${createData.data.recipient_code} (bank_code: ${bankCode})`);
   cachedRecipientCode = createData.data.recipient_code;
   return cachedRecipientCode!;
 }
