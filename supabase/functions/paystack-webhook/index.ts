@@ -17,12 +17,17 @@ Deno.serve(async (req: Request) => {
     );
 
     const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY');
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
 
     if (payload.event === 'charge.success') {
       const { reference, customer, metadata, authorization } = payload.data;
       const userId = metadata?.user_id;
-      const type = metadata?.type; // 'wallet_topup' or 'save_card'
-      const amount = payload.data.amount / 100; // Paystack amounts in kobo
+      // Distinguish payment types:
+      //   'wallet_topup'    → credit the wallet
+      //   'save_card'       → save card auth only
+      //   'number_purchase' → complete the SMS number purchase (server-side safety net)
+      const type = metadata?.type;
+      const amount = payload.data.amount / 100; // kobo → naira
 
       console.log(`Payment success: ${reference}, type: ${type}, user: ${userId}, amount: ${amount}`);
 
@@ -33,7 +38,7 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      // Save card authorization if available
+      // ── Save card authorization (all payment types that carry auth data) ──
       if (authorization?.authorization_code && authorization.reusable) {
         await supabaseAdmin.from('user_profiles').update({
           paystack_customer_code: customer?.customer_code || null,
@@ -46,33 +51,96 @@ Deno.serve(async (req: Request) => {
         console.log('Card saved for user:', userId);
       }
 
-      // Credit wallet for top-up payments
-      if (type === 'wallet_topup' || type === 'save_card') {
-        if (type === 'wallet_topup') {
-          // Get current balance
-          const { data: profile } = await supabaseAdmin
-            .from('user_profiles')
-            .select('wallet_balance')
-            .eq('id', userId)
-            .single();
+      // ── Wallet top-up ──────────────────────────────────────────────────────
+      if (type === 'wallet_topup') {
+        const { data: profile } = await supabaseAdmin
+          .from('user_profiles')
+          .select('wallet_balance')
+          .eq('id', userId)
+          .single();
 
-          const newBalance = Number(profile?.wallet_balance || 0) + amount;
-          await supabaseAdmin.from('user_profiles')
-            .update({ wallet_balance: newBalance })
-            .eq('id', userId);
+        const newBalance = Number(profile?.wallet_balance || 0) + amount;
+        await supabaseAdmin.from('user_profiles')
+          .update({ wallet_balance: newBalance })
+          .eq('id', userId);
 
-          // Record transaction
-          await supabaseAdmin.from('transactions').insert({
-            user_id: userId,
-            amount,
-            type: 'credit',
-            reference,
-            description: 'Wallet top-up via Paystack',
-          });
+        await supabaseAdmin.from('transactions').insert({
+          user_id: userId,
+          amount,
+          type: 'credit',
+          reference,
+          description: 'Wallet top-up via Paystack',
+        });
 
-          console.log(`Wallet credited: ${amount} for user ${userId}`);
+        console.log(`Wallet credited: ₦${amount} for user ${userId}`);
+      }
+
+      // ── Number purchase — server-side safety net ───────────────────────────
+      // Triggered when the client-side WebView misses the payment callback
+      // (app backgrounded, bank transfer settled async, USSD delay, etc.).
+      // Guard: check whether an order for this Paystack reference already exists.
+      // If client-side already completed the purchase, skip cleanly.
+      if (type === 'number_purchase') {
+        const providerCode   = metadata?.provider_code;
+        const countryCode    = metadata?.country_code;
+        const projectCode    = metadata?.project_code;
+        const projectName    = metadata?.project_name ?? projectCode;
+        const countryName    = metadata?.country_name ?? countryCode;
+
+        if (!providerCode || !countryCode || !projectCode) {
+          console.warn('number_purchase webhook missing purchase metadata — cannot complete server-side', metadata);
+        } else {
+          // ── Idempotency check: has this Paystack reference already produced an order? ──
+          const { data: existingOrder } = await supabaseAdmin
+            .from('orders')
+            .select('id, status')
+            .eq('paystack_reference', reference)
+            .maybeSingle();
+
+          if (existingOrder) {
+            console.log(`Webhook: order already exists for reference ${reference} (id: ${existingOrder.id}, status: ${existingOrder.status}) — skipping duplicate purchase`);
+          } else {
+            // No order yet — client missed the callback. Complete the purchase now.
+            console.log(`Webhook: no order found for ${reference} — triggering server-side number purchase`);
+
+            try {
+              const purchaseRes = await fetch(`${supabaseUrl}/functions/v1/purchase-number`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  // Use service role key: the webhook itself is already authenticated
+                  // by Paystack's signature + our secret. We bypass user JWT here.
+                  'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}`,
+                  // Pass a special header so purchase-number knows to skip its own
+                  // user-JWT check and trust the service role auth.
+                  'x-webhook-user-id': userId,
+                },
+                body: JSON.stringify({
+                  provider_code: providerCode,
+                  country_code: String(countryCode),
+                  project_code: String(projectCode),
+                  project_name: projectName,
+                  country_name: countryName,
+                  amount_paid: amount,
+                  paystack_reference: reference,
+                  // Signal that we verified payment ourselves at webhook level
+                  webhook_verified: true,
+                }),
+              });
+
+              const purchaseData = await purchaseRes.json();
+              if (purchaseRes.ok && purchaseData?.data?.order) {
+                console.log(`Webhook purchase SUCCESS for ${reference}: order ${purchaseData.data.order.id}`);
+              } else {
+                console.error(`Webhook purchase FAILED for ${reference}:`, JSON.stringify(purchaseData));
+              }
+            } catch (purchaseErr) {
+              console.error(`Webhook purchase EXCEPTION for ${reference}:`, purchaseErr);
+            }
+          }
         }
       }
+      // ── End number purchase safety net ─────────────────────────────────────
     }
 
     return new Response(JSON.stringify({ received: true }), {
@@ -80,6 +148,7 @@ Deno.serve(async (req: Request) => {
     });
   } catch (err) {
     console.error('Paystack webhook error:', err);
+    // Always return 200 to Paystack so it doesn't retry unnecessarily
     return new Response(JSON.stringify({ received: true }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

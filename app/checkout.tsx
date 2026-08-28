@@ -37,6 +37,8 @@ export default function CheckoutScreen() {
   const [paystackRef, setPaystackRef] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState<{ message: string; hint?: string } | null>(null);
   const [purchaseStage, setPurchaseStage] = useState<'idle' | 'paying' | 'purchasing'>('idle');
+  // Guard: prevent handleWebViewNav from firing executePurchase more than once per payment attempt
+  const callbackFiredRef = React.useRef(false);
 
   const price = parseFloat(params.price || '0');
 
@@ -116,8 +118,18 @@ export default function CheckoutScreen() {
     // ── Paystack charge ──
     setPurchaseStage('paying');
     setLoading(true);
+    // Reset single-fire guard for this new payment attempt
+    callbackFiredRef.current = false;
     try {
-      const data = await initializePayment(user?.email || '', price, 'number_purchase');
+      // Pass purchase metadata so the webhook safety net can complete the purchase
+      // server-side if the WebView never catches the callback (bank transfer, USSD, etc.).
+      const data = await initializePayment(user?.email || '', price, 'number_purchase', {
+        provider_code: params.provider_code,
+        country_code: params.country_code,
+        project_code: params.project_code,
+        project_name: params.project_name,
+        country_name: params.country_name,
+      });
       if (data?.data?.authorization_url) {
         setPaystackRef(data.data.reference);
         setWebViewUrl(data.data.authorization_url);
@@ -133,6 +145,12 @@ export default function CheckoutScreen() {
 
   const handleWebViewNav = async (url: string) => {
     if (url.includes('numvault.app/payment/callback') || url.includes('paystack.com/close')) {
+      // Single-fire guard: only process this callback once per payment attempt
+      if (callbackFiredRef.current) {
+        console.log('checkout: WebView callback already handled, ignoring duplicate');
+        return;
+      }
+      callbackFiredRef.current = true;
       setWebViewUrl(null);
       if (paystackRef) {
         setTimeout(() => executePurchase(paystackRef, false), 1500);

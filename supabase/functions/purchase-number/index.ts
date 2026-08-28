@@ -157,14 +157,27 @@ Deno.serve(async (req: Request) => {
       { global: { headers: { Authorization: `Bearer ${token}` } } }
     );
 
-    const { data: { user }, error: userError } = await supabaseClient.auth.getUser(token);
-    if (userError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 401,
-      });
+    // When called by the webhook safety net, a user JWT is not available.
+    // The webhook passes x-webhook-user-id (trusted — caller uses service role key).
+    const webhookUserId = req.headers.get('x-webhook-user-id');
+    let user: { id: string };
+
+    if (webhookUserId) {
+      // Internal call from paystack-webhook — bypass JWT check
+      user = { id: webhookUserId };
+      console.log('purchase-number: webhook-initiated call for user', webhookUserId);
+    } else {
+      const { data: { user: jwtUser }, error: userError } = await supabaseClient.auth.getUser(token);
+      if (userError || !jwtUser) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 401,
+        });
+      }
+      user = jwtUser;
     }
 
+    const body = await req.json();
     const {
       provider_code,
       country_code,
@@ -174,7 +187,8 @@ Deno.serve(async (req: Request) => {
       amount_paid,
       paystack_reference,  // present for card/bank payment path
       use_wallet,          // true = debit wallet_balance directly, skip Paystack
-    } = await req.json();
+      webhook_verified,    // true = called from webhook (payment already confirmed there)
+    } = body;
 
     if (!provider_code || !country_code || !project_code) {
       return new Response(JSON.stringify({ error: 'Missing required fields: provider_code, country_code, project_code' }), {
@@ -188,6 +202,24 @@ Deno.serve(async (req: Request) => {
         status: 400,
       });
     }
+
+    // ── Idempotency guard: if a client-side call already completed this reference,
+    //    return the existing order rather than purchasing again. ────────────────
+    if (paystack_reference && !use_wallet) {
+      const { data: existingOrder } = await supabaseAdmin
+        .from('orders')
+        .select('*')
+        .eq('paystack_reference', paystack_reference)
+        .maybeSingle();
+
+      if (existingOrder) {
+        console.log(`Idempotency: order ${existingOrder.id} already exists for Paystack ref ${paystack_reference} — returning existing`);
+        return new Response(JSON.stringify({ data: { order: existingOrder, idempotent: true } }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+    // ────────────────────────────────────────────────────────────────
 
     let paidAmount: number;
 
@@ -243,6 +275,19 @@ Deno.serve(async (req: Request) => {
       // ─────────────────────────────────────────────────────────────────────
     } else {
       // ── PAYSTACK PATH: verify payment ─────────────────────────────────────
+      if (webhook_verified) {
+        // Called from paystack-webhook which already verified the payment —
+        // skip a redundant API round-trip and trust the amount from metadata.
+        console.log(`Skipping Paystack verify for webhook-initiated call (ref: ${paystack_reference})`);
+        paidAmount = Number(amount_paid);
+        if (!paidAmount || paidAmount <= 0) {
+          return new Response(JSON.stringify({ error: 'Invalid amount in webhook-initiated purchase' }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 400,
+          });
+        }
+      } else {
+
       console.log('Verifying Paystack payment:', paystack_reference);
       const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY');
       const verifyRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${paystack_reference}`, {
@@ -263,6 +308,7 @@ Deno.serve(async (req: Request) => {
       }
 
       paidAmount = verifyData.data.amount / 100; // kobo to naira
+      } // end: !webhook_verified verify block
       // ─────────────────────────────────────────────────────────────────────
     }
 
@@ -357,6 +403,8 @@ Deno.serve(async (req: Request) => {
     const phoneNumber = numberData?.mobile_number || numberData?.phone || numberData?.number || String(numberData);
 
     // Create order in database
+    // order_reference = Socially internal ref (nv_...)
+    // paystack_reference = Paystack payment ref (used for idempotency + webhook guard)
     const { data: order, error: orderError } = await supabaseAdmin
       .from('orders')
       .insert({
@@ -371,6 +419,7 @@ Deno.serve(async (req: Request) => {
         status: 'pending',
         socially_order_id: sociallyReference,
         order_reference: sociallyReference,
+        paystack_reference: paystack_reference || null,
         // country_id column stores the service string for Server B (e.g. "tiktok")
       })
       .select()
