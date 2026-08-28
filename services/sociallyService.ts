@@ -299,9 +299,20 @@ export async function getPackagesForCountry(providerCode: string, countryCode: s
 export async function getOTP(reference: string): Promise<{ otp: string | null; mobile_number: string | null }> {
   try {
     const data = await sociallyProxy(`/request/sms/verification/${reference}/otp`);
-    const message: string = data?.message || '';
-    const otpMatch = message.match(/\((\d{4,8})\)/);
-    const otp = otpMatch ? otpMatch[1] : null;
+    // Primary: read the clean OTP code directly from data.data.response
+    // More reliable than regex-parsing the human-readable message which can
+    // contain spaces inside parentheses (e.g. "(914 947)") or be reworded.
+    let otp: string | null = null;
+    const responseField = data?.data?.response;
+    if (responseField !== undefined && responseField !== null && String(responseField).trim() !== '') {
+      otp = String(responseField).trim();
+    } else {
+      // Fallback: parse message string, allowing optional spaces inside parens
+      const message: string = data?.message || '';
+      const otpMatch = message.match(/\(([\d\s]{4,12})\)/);
+      if (otpMatch) otp = otpMatch[1].replace(/\s+/g, '');
+    }
+
     const mobileNumber = data?.data?.mobile_number || null;
     return { otp, mobile_number: mobileNumber };
   } catch {

@@ -10,10 +10,9 @@ export default function RootScreen() {
   const [onboardingDone, setOnboardingDone] = useState(false);
 
   useEffect(() => {
-    AsyncStorage.getItem('onboarding_done').then((val) => {
-      setOnboardingDone(!!val);
-      setOnboardingChecked(true);
-    });
+    // Always show onboarding on every fresh app open — do not persist the flag
+    setOnboardingDone(false);
+    setOnboardingChecked(true);
   }, []);
 
   if (!onboardingChecked) {
