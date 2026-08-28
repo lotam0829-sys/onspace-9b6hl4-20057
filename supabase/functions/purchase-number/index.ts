@@ -227,9 +227,9 @@ Deno.serve(async (req: Request) => {
       .insert({
         user_id: user.id,
         provider_code,
-        country_id: country_code,  // store as country_id column for backward compat
+        country_id: String(country_code),
         country_name: country_name || String(country_code),
-        project_id: 0,             // project_id column kept for backward compat
+        project_id: String(project_code),
         project_name: project_name || project_code,
         phone_number: phoneNumber,
         amount_paid: paidAmount,
