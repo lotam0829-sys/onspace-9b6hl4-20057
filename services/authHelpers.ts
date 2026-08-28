@@ -1,11 +1,12 @@
 import { getSupabaseClient } from '@/template';
 
 /**
- * Waits up to ~2.4 s for the Supabase session to become active after verifyOtp.
+ * Waits up to ~10 s for the Supabase session to become active after verifyOtp.
  * verifyOtp resolves before the onAuthStateChange SIGNED_IN event fires, so
  * calling updateUser immediately can fail with "Auth session missing".
+ * 20 attempts × 500 ms = 10 s ceiling — enough for slow network conditions.
  */
-export async function waitForSession(maxAttempts = 8, intervalMs = 300): Promise<boolean> {
+export async function waitForSession(maxAttempts = 20, intervalMs = 500): Promise<boolean> {
   const supabase = getSupabaseClient();
   for (let i = 0; i < maxAttempts; i++) {
     const { data } = await supabase.auth.getSession();
@@ -25,7 +26,7 @@ export async function setPasswordWithRetry(password: string): Promise<string | n
     const { error } = await supabase.auth.updateUser({ password });
     if (!error) return null;
     console.warn(`[NumVault] updateUser attempt ${attempt} failed: ${error.message}`);
-    if (attempt < 2) await new Promise<void>(r => setTimeout(r, 600));
+    if (attempt < 2) await new Promise<void>(r => setTimeout(r, 1500));
   }
   return 'Your account was created but your password could not be saved. Please use Forgot Password to set a new password before signing in.';
 }
