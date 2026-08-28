@@ -25,6 +25,11 @@ export async function setPasswordWithRetry(password: string): Promise<string | n
   for (let attempt = 1; attempt <= 2; attempt++) {
     const { error } = await supabase.auth.updateUser({ password });
     if (!error) return null;
+    // 422 "New password should be different from the old password" means the
+    // password is already set to this value (e.g. on a retry) — treat as success.
+    if (error.status === 422 || error.message?.toLowerCase().includes('same password') || error.message?.toLowerCase().includes('different from')) {
+      return null;
+    }
     console.warn(`[NumVault] updateUser attempt ${attempt} failed: ${error.message}`);
     if (attempt < 2) await new Promise<void>(r => setTimeout(r, 1500));
   }

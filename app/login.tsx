@@ -87,11 +87,11 @@ export default function LoginScreen() {
     if (passwordError) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       showAlert('Password Not Saved', passwordError);
-      // Do NOT return here — the account is created and the session is live.
-      // AuthRouter will redirect to the app; the user just needs to reset their password.
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
+    // Account is created and session is live — navigate to main app.
+    router.replace('/(tabs)');
   };
 
   const handleLogin = async () => {
