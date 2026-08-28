@@ -29,7 +29,7 @@ const SCREENS = [
     steps: [
       { num: "1", text: "Choose what you're signing up for" },
       { num: "2", text: "Pick a number" },
-      { num: "3", text: "Pay securely with your card or wallet" },
+      { num: "3", text: "Pay securely with your card or transfer" },
       { num: "4", text: "Get your number instantly. OTP delivered automatically." },
     ],
   },
