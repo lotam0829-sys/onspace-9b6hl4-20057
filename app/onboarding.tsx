@@ -7,7 +7,7 @@ import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
 const { width, height } = Dimensions.get('window');
@@ -40,6 +40,10 @@ export default function OnboardingScreen() {
   const scrollRef = useRef<ScrollView>(null);
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { user } = useAuth();
+
+  // If user is already signed in go straight to the app, otherwise go to login.
+  const finish = () => router.replace(user ? '/(tabs)' : '/login');
 
   const goNext = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -48,15 +52,13 @@ export default function OnboardingScreen() {
       scrollRef.current?.scrollTo({ x: nextIndex * width, animated: true });
       setCurrentIndex(nextIndex);
     } else {
-      await AsyncStorage.setItem('onboarding_done', 'true');
-      router.replace('/login');
+      finish();
     }
   };
 
   const skip = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await AsyncStorage.setItem('onboarding_done', 'true');
-    router.replace('/login');
+    finish();
   };
 
   const screen = SCREENS[currentIndex];
