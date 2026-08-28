@@ -16,8 +16,4 @@ config.resolver.nodeModulesPaths = [
 // and not just symlinked paths from the virtual store.
 config.watchFolders = [projectRoot];
 
-// Enable package exports resolution — required for pnpm where packages
-// use exports field in package.json instead of main.
-config.resolver.unstable_enablePackageExports = true;
-
 module.exports = config;
