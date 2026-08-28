@@ -15,21 +15,21 @@ const { width, height } = Dimensions.get('window');
 const SCREENS = [
   {
     image: require('@/assets/images/onboarding1.png'),
-    headline: "Tired of being locked out?",
-    subtext: "You have a Nigerian number but PayPal won't accept it. Your TikTok got banned and you can't start over. You need a Wise account but they want a UK number. We've all been there.",
+    headline: "Your number is more exposed than you think",
+    subtext: "Every sign-up form, every stranger you meet online, every app you download — they all want your real number. NumVault gives you a private one instead.",
   },
   {
     image: require('@/assets/images/onboarding2.png'),
-    headline: "Nigeria shouldn't hold you back",
-    subtext: "Every platform you need — PayPal, TikTok, Telegram, Google, Binance — requires a local number to verify. NumVault gives you that number instantly, from any country, in under 2 minutes.",
+    headline: "Privacy shouldn't be optional",
+    subtext: "Protect yourself from spam, harassment, and SIM-swap fraud. Use NumVault for dating apps, online marketplaces, and any sign-up — without ever exposing your real number.",
   },
   {
     image: require('@/assets/images/onboarding3.png'),
     headline: "Here's exactly how it works",
     steps: [
-      { num: "1", text: "Pick your platform (TikTok, PayPal, etc.)" },
-      { num: "2", text: "Pick your country (US, UK, Canada, etc.)" },
-      { num: "3", text: "Pay securely with your card" },
+      { num: "1", text: "Choose what you're signing up for" },
+      { num: "2", text: "Pick a number" },
+      { num: "3", text: "Pay securely with your card or wallet" },
       { num: "4", text: "Get your number instantly. OTP delivered automatically." },
     ],
   },
