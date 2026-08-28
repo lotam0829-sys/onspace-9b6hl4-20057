@@ -6,16 +6,17 @@ import { View, ActivityIndicator } from 'react-native';
 import { Colors } from '@/constants/theme';
 
 export default function RootScreen() {
-  const [onboardingChecked, setOnboardingChecked] = useState(false);
+  const [checked, setChecked] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
 
   useEffect(() => {
-    // Always show onboarding on every fresh app open — do not persist the flag
-    setOnboardingDone(false);
-    setOnboardingChecked(true);
+    AsyncStorage.getItem('onboarding_done').then((val) => {
+      setOnboardingDone(val === 'true');
+      setChecked(true);
+    });
   }, []);
 
-  if (!onboardingChecked) {
+  if (!checked) {
     return (
       <View style={{ flex: 1, backgroundColor: Colors.background, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator color={Colors.primary} />

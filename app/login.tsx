@@ -106,6 +106,7 @@ export default function LoginScreen() {
       showAlert('Login Failed', error);
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      router.replace('/(tabs)');
     }
   };
 
