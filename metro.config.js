@@ -1,15 +1,23 @@
 const { getDefaultConfig } = require('expo/metro-config');
 const path = require('path');
 
-const config = getDefaultConfig(__dirname);
+const projectRoot = __dirname;
+const config = getDefaultConfig(projectRoot);
 
-// Required for pnpm's non-hoisted virtual store layout.
-// Without this, Metro's internal getTransformCacheKey.js fails to resolve
-// its own package.json via a relative path (../../package.json) because
-// pnpm nests packages under .pnpm/<pkg>@version/node_modules/<pkg>/
-// instead of the flat node_modules/<pkg>/ that Metro expects.
+// Fix for pnpm virtual store layout: Metro's getTransformCacheKey.js
+// resolves ../../package.json relative to its own location inside
+// .pnpm/metro@x.x.x/node_modules/metro/src/DeltaBundler/ which points
+// outside the package in pnpm's non-hoisted structure.
 config.resolver.nodeModulesPaths = [
-  path.resolve(__dirname, 'node_modules'),
+  path.resolve(projectRoot, 'node_modules'),
 ];
+
+// Required for pnpm: ensure Metro watches the actual node_modules
+// and not just symlinked paths from the virtual store.
+config.watchFolders = [projectRoot];
+
+// Enable package exports resolution — required for pnpm where packages
+// use exports field in package.json instead of main.
+config.resolver.unstable_enablePackageExports = true;
 
 module.exports = config;
