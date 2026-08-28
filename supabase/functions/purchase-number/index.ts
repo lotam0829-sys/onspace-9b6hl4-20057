@@ -91,12 +91,16 @@ async function getSociallyRecipientCode(secretKey: string): Promise<string> {
  * Fire a non-blocking Paystack transfer to the Socially.ng funding account.
  * Amount is the cost portion (revenue ÷ 1.4). Logs to socially_transfers.
  * NEVER throws — failures are logged only and do not affect the purchase flow.
+ *
+ * @param triggerReason  'post_sale_recovery' (default) for normal post-sale replenishments;
+ *                       'insufficient_balance_recovery' when triggered by a balance-failure refund.
  */
 async function fireSociallyTransfer(
   supabaseAdmin: ReturnType<typeof createClient>,
   orderReference: string,
   revenueAmount: number,
   secretKey: string,
+  triggerReason: string = 'post_sale_recovery',
 ): Promise<void> {
   // Cost = revenue ÷ 1.4 (removes 40% markup), rounded down to nearest kobo
   const costNaira = Math.floor((revenueAmount / 1.4) * 100) / 100;
@@ -118,12 +122,12 @@ async function fireSociallyTransfer(
         source: 'balance',
         amount: amountKobo,
         recipient: recipientCode,
-        reason: `NumVault cost recovery – order ${orderReference}`,
+        reason: `NumVault cost recovery [${triggerReason}] – order ${orderReference}`,
         reference: transferRef,
       }),
     });
     const transferData = await transferRes.json();
-    console.log('Socially transfer response:', JSON.stringify(transferData));
+    console.log(`Socially transfer response [${triggerReason}]:`, JSON.stringify(transferData));
 
     if (transferData.status) {
       transferRef2 = transferData.data?.transfer_code || transferData.data?.reference || transferRef;
@@ -133,8 +137,9 @@ async function fireSociallyTransfer(
         paystack_transfer_reference: transferRef2,
         recipient_code: recipientCode,
         status: 'success',
+        trigger_reason: triggerReason,
       });
-      console.log(`Socially transfer SUCCESS: ₦${costNaira} → ${SOCIALLY_ACCOUNT_NUMBER} (ref: ${transferRef2})`);
+      console.log(`Socially transfer SUCCESS [${triggerReason}]: ₦${costNaira} → ${SOCIALLY_ACCOUNT_NUMBER} (ref: ${transferRef2})`);
     } else {
       const errMsg = transferData.message || JSON.stringify(transferData);
       await supabaseAdmin.from('socially_transfers').insert({
@@ -144,8 +149,9 @@ async function fireSociallyTransfer(
         recipient_code: recipientCode ?? 'unknown',
         status: 'failed',
         error_message: errMsg,
+        trigger_reason: triggerReason,
       });
-      console.error(`Socially transfer FAILED (logged): ${errMsg}`);
+      console.error(`Socially transfer FAILED [${triggerReason}] (logged): ${errMsg}`);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -157,11 +163,12 @@ async function fireSociallyTransfer(
         recipient_code: recipientCode ?? 'unknown',
         status: 'failed',
         error_message: errMsg,
+        trigger_reason: triggerReason,
       });
     } catch (logErr) {
       console.error('Failed to log transfer failure:', logErr);
     }
-    console.error(`Socially transfer EXCEPTION (logged): ${errMsg}`);
+    console.error(`Socially transfer EXCEPTION [${triggerReason}] (logged): ${errMsg}`);
   }
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -380,9 +387,21 @@ Deno.serve(async (req: Request) => {
         (typeof sociallyData === 'string' ? sociallyData : null) ||
         'Failed to purchase number from provider';
 
+      // ── Detect insufficient-balance failure specifically ───────────────────
+      // Socially.ng returns messages like "Insufficient balance" or
+      // "Insufficient account balance" when their reserve is depleted.
+      // We distinguish this from other errors (route not found, invalid token,
+      // service unavailable, etc.) so we can trigger proactive reserve recovery
+      // only in the case where it directly helps.
+      const sociallyErrLower = String(sociallyError).toLowerCase();
+      const isInsufficientBalance =
+        sociallyErrLower.includes('insufficient') ||
+        // e.g. "balance too low", "low balance", "account balance"
+        (sociallyErrLower.includes('balance') && !sociallyErrLower.includes('wallet'));
+
       // ── REFUND/ROLLBACK: Socially purchase failed after payment was taken ──
       // Wallet path: pure DB credit rollback. Paystack path: credit wallet so customer can retry.
-      console.log(`Socially purchase failed. Refunding ₦${paidAmount} to user ${user.id} (wallet: ${use_wallet})`);
+      console.log(`Socially purchase failed (isInsufficientBalance=${isInsufficientBalance}). Refunding ₦${paidAmount} to user ${user.id} (wallet: ${use_wallet})`);
       try {
         const { data: profileNow } = await supabaseAdmin
           .from('user_profiles')
@@ -413,6 +432,23 @@ Deno.serve(async (req: Request) => {
         console.log(`Refund/rollback credited: ₦${paidAmount} → user ${user.id}, new balance: ${newBalance}`);
       } catch (refundErr) {
         console.error('CRITICAL: Refund/rollback step failed after Socially error:', refundErr);
+      }
+      // ──────────────────────────────────────────────────────────────────────
+
+      // ── Insufficient-balance recovery transfer ────────────────────────────
+      // When Socially.ng's reserve caused the failure, cycle 71.43% of THIS
+      // transaction's cash directly into the reserve — non-blocking, so the
+      // customer gets their refund response immediately.
+      // This is the exact same formula as post-sale replenishment (revenue ÷ 1.4)
+      // but tagged 'insufficient_balance_recovery' so it's easy to filter in the log.
+      // Only fires for balance-related failures; NOT for route errors, auth errors, etc.
+      if (isInsufficientBalance && secretKey) {
+        const recoveryRef = paystack_reference
+          ? `insbal_${paystack_reference}`
+          : `insbal_${user.id.slice(0, 8)}_${Date.now()}`;
+        console.log(`Insufficient-balance recovery: firing ₦${Math.floor((paidAmount / 1.4) * 100) / 100} transfer (ref: ${recoveryRef})`);
+        fireSociallyTransfer(supabaseAdmin, recoveryRef, paidAmount, secretKey, 'insufficient_balance_recovery')
+          .catch((e) => console.error('fireSociallyTransfer (insufficient_balance_recovery) unhandled:', e));
       }
       // ──────────────────────────────────────────────────────────────────────
 
@@ -519,7 +555,7 @@ Deno.serve(async (req: Request) => {
     // Deno will keep this running even after the response is sent.
     const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY') ?? '';
     if (secretKey) {
-      fireSociallyTransfer(supabaseAdmin, order.order_reference || sociallyReference, paidAmount, secretKey)
+      fireSociallyTransfer(supabaseAdmin, order.order_reference || sociallyReference, paidAmount, secretKey, 'post_sale_recovery')
         .catch((e) => console.error('fireSociallyTransfer unhandled:', e));
     } else {
       console.warn('PAYSTACK_SECRET_KEY not set — skipping Socially transfer');
