@@ -3,6 +3,141 @@ import { corsHeaders, handleCors } from '../_shared/cors.ts';
 
 const PAYSTACK_BASE = 'https://api.paystack.co';
 
+// ── Socially.ng funding account (Palmpay) ──────────────────────────────────
+// Transfers are fired non-blocking after every successful purchase.
+// Cost = revenue ÷ 1.4  (71.43% of amount paid, i.e. the pre-markup price).
+// Recipient code is resolved once and cached in-memory for the function lifetime.
+const SOCIALLY_BANK_CODE = '999111';   // Palmpay bank code on Paystack
+const SOCIALLY_ACCOUNT_NUMBER = '6635796668';
+const SOCIALLY_ACCOUNT_NAME = 'Riteweb Digital Services-Sim(Paymentpoint)';
+let cachedRecipientCode: string | null = null;
+
+/**
+ * Resolve or create a Paystack Transfer Recipient for the Socially.ng account.
+ * Uses a simple in-memory cache so we only hit Paystack's API once per
+ * cold-start of this function instance.
+ */
+async function getSociallyRecipientCode(secretKey: string): Promise<string> {
+  if (cachedRecipientCode) return cachedRecipientCode;
+
+  // Try to list existing recipients and find the one matching our account number
+  const listRes = await fetch(`${PAYSTACK_BASE}/transferrecipient?perPage=100`, {
+    headers: { 'Authorization': `Bearer ${secretKey}` },
+  });
+  const listData = await listRes.json();
+  if (listData.status && Array.isArray(listData.data)) {
+    const existing = listData.data.find(
+      (r: { details?: { account_number?: string }; recipient_code?: string }) =>
+        r.details?.account_number === SOCIALLY_ACCOUNT_NUMBER
+    );
+    if (existing?.recipient_code) {
+      cachedRecipientCode = existing.recipient_code;
+      return cachedRecipientCode!;
+    }
+  }
+
+  // Not found — create it
+  const createRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${secretKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      type: 'nuban',
+      name: SOCIALLY_ACCOUNT_NAME,
+      account_number: SOCIALLY_ACCOUNT_NUMBER,
+      bank_code: SOCIALLY_BANK_CODE,
+      currency: 'NGN',
+    }),
+  });
+  const createData = await createRes.json();
+  if (!createData.status || !createData.data?.recipient_code) {
+    throw new Error(`Failed to create transfer recipient: ${JSON.stringify(createData)}`);
+  }
+  cachedRecipientCode = createData.data.recipient_code;
+  return cachedRecipientCode!;
+}
+
+/**
+ * Fire a non-blocking Paystack transfer to the Socially.ng funding account.
+ * Amount is the cost portion (revenue ÷ 1.4). Logs to socially_transfers.
+ * NEVER throws — failures are logged only and do not affect the purchase flow.
+ */
+async function fireSociallyTransfer(
+  supabaseAdmin: ReturnType<typeof createClient>,
+  orderReference: string,
+  revenueAmount: number,
+  secretKey: string,
+): Promise<void> {
+  // Cost = revenue ÷ 1.4 (removes 40% markup), rounded down to nearest kobo
+  const costNaira = Math.floor((revenueAmount / 1.4) * 100) / 100;
+  const amountKobo = Math.round(costNaira * 100); // Paystack uses kobo
+  const transferRef = `st_${orderReference}_${Date.now()}`;
+  let recipientCode: string | null = null;
+  let transferRef2: string | null = null;
+
+  try {
+    recipientCode = await getSociallyRecipientCode(secretKey);
+
+    const transferRes = await fetch(`${PAYSTACK_BASE}/transfer`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${secretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        source: 'balance',
+        amount: amountKobo,
+        recipient: recipientCode,
+        reason: `NumVault cost recovery – order ${orderReference}`,
+        reference: transferRef,
+      }),
+    });
+    const transferData = await transferRes.json();
+    console.log('Socially transfer response:', JSON.stringify(transferData));
+
+    if (transferData.status) {
+      transferRef2 = transferData.data?.transfer_code || transferData.data?.reference || transferRef;
+      await supabaseAdmin.from('socially_transfers').insert({
+        order_reference: orderReference,
+        amount_transferred: costNaira,
+        paystack_transfer_reference: transferRef2,
+        recipient_code: recipientCode,
+        status: 'success',
+      });
+      console.log(`Socially transfer SUCCESS: ₦${costNaira} → ${SOCIALLY_ACCOUNT_NUMBER} (ref: ${transferRef2})`);
+    } else {
+      const errMsg = transferData.message || JSON.stringify(transferData);
+      await supabaseAdmin.from('socially_transfers').insert({
+        order_reference: orderReference,
+        amount_transferred: costNaira,
+        paystack_transfer_reference: transferRef,
+        recipient_code: recipientCode ?? 'unknown',
+        status: 'failed',
+        error_message: errMsg,
+      });
+      console.error(`Socially transfer FAILED (logged): ${errMsg}`);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    try {
+      await supabaseAdmin.from('socially_transfers').insert({
+        order_reference: orderReference,
+        amount_transferred: costNaira,
+        paystack_transfer_reference: transferRef,
+        recipient_code: recipientCode ?? 'unknown',
+        status: 'failed',
+        error_message: errMsg,
+      });
+    } catch (logErr) {
+      console.error('Failed to log transfer failure:', logErr);
+    }
+    console.error(`Socially transfer EXCEPTION (logged): ${errMsg}`);
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 Deno.serve(async (req: Request) => {
   const corsRes = handleCors(req);
   if (corsRes) return corsRes;
@@ -289,7 +424,11 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    return new Response(JSON.stringify({
+    // ── RESPOND TO CLIENT IMMEDIATELY ────────────────────────────────────────
+    // Fire the cost-recovery transfer AFTER the response is constructed so the
+    // customer never waits on it. We use a non-blocking pattern: build the
+    // response first, then kick off the transfer, then return.
+    const successResponse = new Response(JSON.stringify({
       data: {
         order,
         number_data: numberData,
@@ -298,6 +437,18 @@ Deno.serve(async (req: Request) => {
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
+
+    // Non-blocking transfer — intentionally not awaited before response.
+    // Deno will keep this running even after the response is sent.
+    const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY') ?? '';
+    if (secretKey) {
+      fireSociallyTransfer(supabaseAdmin, order.order_reference || sociallyReference, paidAmount, secretKey)
+        .catch((e) => console.error('fireSociallyTransfer unhandled:', e));
+    } else {
+      console.warn('PAYSTACK_SECRET_KEY not set — skipping Socially transfer');
+    }
+
+    return successResponse;
   } catch (err) {
     console.error('Purchase number error:', err);
     return new Response(JSON.stringify({ error: err.message }), {
