@@ -16,4 +16,12 @@ config.resolver.nodeModulesPaths = [
 // and not just symlinked paths from the virtual store.
 config.watchFolders = [projectRoot];
 
+// Pin metro-transform-worker to a single copy so Metro's "expected one
+// Expo template package, found 2" check never triggers. pnpm's virtual
+// store can surface the same package via both the top-level node_modules
+// symlink and the .pnpm store path; extraNodeModules forces one winner.
+config.resolver.extraNodeModules = {
+  'metro-transform-worker': path.resolve(projectRoot, 'node_modules/metro-transform-worker'),
+};
+
 module.exports = config;
