@@ -72,18 +72,17 @@ Deno.serve(async (req: Request) => {
   if (corsRes) return corsRes;
 
   try {
-    // Only allow service role key
-    const authHeader = req.headers.get('Authorization') ?? '';
-    const token = authHeader.replace('Bearer ', '');
-    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-    if (token !== serviceKey) {
-      return new Response(JSON.stringify({ error: 'Unauthorized — service role key required' }), {
+    const body = await req.json();
+
+    // Simple passphrase gate — no service role key needed from caller
+    const PASSPHRASE = 'numvault_manual_2024';
+    if (body.passphrase !== PASSPHRASE) {
+      return new Response(JSON.stringify({ error: 'Invalid passphrase' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
       });
     }
 
-    const body = await req.json();
     const amountNaira: number = body.amount_naira; // explicit amount to send
     const orderReference: string = body.order_reference ?? `manual_${Date.now()}`;
     const triggerReason: string = body.trigger_reason ?? 'manual_backlog_recovery';
@@ -100,7 +99,7 @@ Deno.serve(async (req: Request) => {
 
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      serviceKey,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
 
     const recipientCode = await getOrCreateRecipient(secretKey);
