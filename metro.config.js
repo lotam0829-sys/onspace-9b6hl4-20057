@@ -4,24 +4,23 @@ const path = require('path');
 const projectRoot = __dirname;
 const config = getDefaultConfig(projectRoot);
 
-// Fix for pnpm virtual store layout: Metro's getTransformCacheKey.js
-// resolves ../../package.json relative to its own location inside
-// .pnpm/metro@x.x.x/node_modules/metro/src/DeltaBundler/ which points
-// outside the package in pnpm's non-hoisted structure.
+// Tell Metro to resolve modules only from the top-level node_modules.
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),
 ];
 
-// Required for pnpm: ensure Metro watches the actual node_modules
-// and not just symlinked paths from the virtual store.
 config.watchFolders = [projectRoot];
 
-// Pin metro-transform-worker to a single copy so Metro's "expected one
-// Expo template package, found 2" check never triggers. pnpm's virtual
-// store can surface the same package via both the top-level node_modules
-// symlink and the .pnpm store path; extraNodeModules forces one winner.
-config.resolver.extraNodeModules = {
-  'metro-transform-worker': path.resolve(projectRoot, 'node_modules/metro-transform-worker'),
-};
+// Prevent Metro from following pnpm symlinks into the virtual store
+// (.pnpm/…/node_modules). Without this:
+//   1. Metro discovers multiple copies of packages like metro-transform-worker
+//      (one via the top-level symlink, one via the store path), triggering
+//      Expo's "expected one template package, found 2" error.
+//   2. Relative requires inside the virtual store (e.g. ../../package.json in
+//      metro/src/DeltaBundler/getTransformCacheKey.js) escape the package root
+//      and cannot be resolved.
+// Setting unstable_enableSymlinks to false keeps Metro inside the hoisted
+// top-level node_modules, where both problems disappear.
+config.resolver.unstable_enableSymlinks = false;
 
 module.exports = config;
