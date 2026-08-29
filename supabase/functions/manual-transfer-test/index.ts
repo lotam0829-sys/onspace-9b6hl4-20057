@@ -72,17 +72,18 @@ Deno.serve(async (req: Request) => {
   if (corsRes) return corsRes;
 
   try {
-    const body = await req.json();
-
-    // Simple passphrase gate — no service role key needed from caller
-    const PASSPHRASE = 'numvault_manual_2024';
-    if (body.passphrase !== PASSPHRASE) {
-      return new Response(JSON.stringify({ error: 'Invalid passphrase' }), {
+    // Service role key gate — only internal callers with the service role key may invoke this
+    const authHeader = req.headers.get('Authorization');
+    const token = authHeader?.replace('Bearer ', '');
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    if (!token || token !== serviceRoleKey) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
       });
     }
 
+    const body = await req.json();
     const amountNaira: number = body.amount_naira; // explicit amount to send
     const orderReference: string = body.order_reference ?? `manual_${Date.now()}`;
     const triggerReason: string = body.trigger_reason ?? 'manual_backlog_recovery';
