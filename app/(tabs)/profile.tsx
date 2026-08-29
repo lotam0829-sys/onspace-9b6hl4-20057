@@ -36,6 +36,16 @@ export default function ProfileScreen() {
     message: string;
   } | null>(null);
 
+  // Admin subaccount setup state
+  const [settingUpSubaccount, setSettingUpSubaccount] = useState(false);
+  const [subaccountResult, setSubaccountResult] = useState<{
+    success: boolean;
+    subaccount_code: string;
+    already_existed: boolean;
+    note: string;
+    message: string;
+  } | null>(null);
+
   const isAdmin = user?.email === ADMIN_EMAIL;
 
   useEffect(() => {
@@ -66,6 +76,49 @@ export default function ProfileScreen() {
         },
       },
     ]);
+  };
+
+  const handleSetupSubaccount = async () => {
+    setSettingUpSubaccount(true);
+    setSubaccountResult(null);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      const { data, error } = await supabase.functions.invoke('setup-subaccount', { body: {} });
+
+      if (error) {
+        let errorMessage = error.message;
+        if (error instanceof FunctionsHttpError) {
+          try {
+            const textContent = await error.context?.text();
+            errorMessage = textContent || error.message;
+          } catch { /* keep original */ }
+        }
+        setSubaccountResult({ success: false, subaccount_code: '', already_existed: false, note: '', message: errorMessage });
+        showAlert('Setup Failed', errorMessage);
+      } else if (data?.success) {
+        setSubaccountResult({
+          success: true,
+          subaccount_code: data.subaccount_code,
+          already_existed: !!data.already_existed,
+          note: data.note || '',
+          message: '',
+        });
+        showAlert(
+          data.already_existed ? 'Subaccount Found' : 'Subaccount Created',
+          `Code: ${data.subaccount_code}\n\n${data.note}\n\nNext step: add SOCIALLY_SUBACCOUNT_CODE secret in Cloud > Secrets.`,
+        );
+      } else {
+        const msg = data?.error || 'Unknown error';
+        setSubaccountResult({ success: false, subaccount_code: '', already_existed: false, note: '', message: msg });
+        showAlert('Setup Failed', msg);
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Unexpected error';
+      setSubaccountResult({ success: false, subaccount_code: '', already_existed: false, note: '', message: msg });
+      showAlert('Error', msg);
+    } finally {
+      setSettingUpSubaccount(false);
+    }
   };
 
   const handleAdminTransfer = async () => {
@@ -245,6 +298,62 @@ export default function ProfileScreen() {
                     : transferResult?.success
                     ? 'Sent'
                     : 'Send Transfer'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* ── Setup Paystack Subaccount ── */}
+            <View style={[styles.adminCard, { borderColor: Colors.primary, marginTop: Spacing.sm }]}>
+              <View style={styles.adminHeader}>
+                <MaterialIcons name="account-balance" size={18} color={Colors.primary} />
+                <Text style={[styles.adminTitle, { color: Colors.primary }]}>Paystack Split Setup</Text>
+              </View>
+              <Text style={styles.adminDesc}>
+                Create a Paystack subaccount for Socially.ng (Palmpay 6635796668).{`\n`}
+                Main account keeps <Text style={{ color: Colors.text, fontWeight: FontWeight.semibold }}>28.57%</Text>, Socially.ng receives <Text style={{ color: Colors.primary, fontWeight: FontWeight.semibold }}>71.43%</Text> per sale.{`\n`}
+                Idempotent — safe to run again if already set up.
+              </Text>
+
+              {subaccountResult ? (
+                <View style={[styles.resultBadge, { borderColor: subaccountResult.success ? Colors.primary : Colors.error }]}>
+                  <MaterialIcons
+                    name={subaccountResult.success ? 'check-circle' : 'error'}
+                    size={16}
+                    color={subaccountResult.success ? Colors.primary : Colors.error}
+                  />
+                  <View style={{ flex: 1, gap: 4 }}>
+                    {subaccountResult.success ? (
+                      <>
+                        <Text style={[styles.resultText, { color: Colors.primary }]}>
+                          {subaccountResult.already_existed ? 'Already exists' : 'Created'}: <Text style={{ fontFamily: 'monospace' }}>{subaccountResult.subaccount_code}</Text>
+                        </Text>
+                        <Text style={[styles.resultText, { color: Colors.textSecondary }]}>
+                          {subaccountResult.note}
+                        </Text>
+                        <Text style={[styles.resultText, { color: Colors.warning }]}>
+                          Next: add secret SOCIALLY_SUBACCOUNT_CODE = {subaccountResult.subaccount_code}
+                        </Text>
+                      </>
+                    ) : (
+                      <Text style={[styles.resultText, { color: Colors.error }]}>{subaccountResult.message}</Text>
+                    )}
+                  </View>
+                </View>
+              ) : null}
+
+              <TouchableOpacity
+                style={[styles.adminBtn, { backgroundColor: Colors.primary }, settingUpSubaccount && styles.adminBtnDisabled]}
+                onPress={handleSetupSubaccount}
+                activeOpacity={0.8}
+                disabled={settingUpSubaccount}
+              >
+                {settingUpSubaccount ? (
+                  <ActivityIndicator size="small" color={Colors.black} />
+                ) : (
+                  <MaterialIcons name="account-balance" size={16} color={Colors.black} />
+                )}
+                <Text style={styles.adminBtnText}>
+                  {settingUpSubaccount ? 'Setting up...' : 'Setup / Check Subaccount'}
                 </Text>
               </TouchableOpacity>
             </View>
