@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  StatusBar, TextInput,
+  StatusBar, TextInput, ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -10,8 +10,14 @@ import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert, getSupabaseClient } from '@/template';
 import { useWallet } from '@/hooks/useWallet';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { FunctionsHttpError } from '@supabase/supabase-js';
 
+const ADMIN_EMAIL = 'oluwaferanmionabanjo@gmail.com';
 const supabase = getSupabaseClient();
+
+// ── Admin: pending backlog transfer ─────────────────────────────────────────
+const BACKLOG_AMOUNT = 1422.14;
+const BACKLOG_ORDER_REF = 'nv_6ab1baa4_1787954081117';
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
@@ -21,6 +27,16 @@ export default function ProfileScreen() {
   const { showAlert } = useAlert();
   const [newName, setNewName] = useState('');
   const [editingName, setEditingName] = useState(false);
+
+  // Admin transfer state
+  const [transferring, setTransferring] = useState(false);
+  const [transferResult, setTransferResult] = useState<{
+    success: boolean;
+    ref: string;
+    message: string;
+  } | null>(null);
+
+  const isAdmin = user?.email === ADMIN_EMAIL;
 
   useEffect(() => {
     if (user) refreshProfile();
@@ -50,6 +66,67 @@ export default function ProfileScreen() {
         },
       },
     ]);
+  };
+
+  const handleAdminTransfer = async () => {
+    showAlert(
+      'Send Backlog Transfer',
+      `Send ₦${BACKLOG_AMOUNT.toLocaleString()} to Socially.ng (Palmpay) for order ${BACKLOG_ORDER_REF}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send Now',
+          style: 'default',
+          onPress: async () => {
+            setTransferring(true);
+            setTransferResult(null);
+            try {
+              await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+              const { data, error } = await supabase.functions.invoke('manual-transfer-test', {
+                body: {
+                  amount_naira: BACKLOG_AMOUNT,
+                  order_reference: BACKLOG_ORDER_REF,
+                  trigger_reason: 'manual_backlog_recovery',
+                },
+              });
+
+              if (error) {
+                let errorMessage = error.message;
+                if (error instanceof FunctionsHttpError) {
+                  try {
+                    const textContent = await error.context?.text();
+                    errorMessage = textContent || error.message;
+                  } catch {
+                    // keep original
+                  }
+                }
+                setTransferResult({ success: false, ref: '', message: errorMessage });
+                showAlert('Transfer Failed', errorMessage);
+              } else if (data?.success) {
+                const ref = data.paystack_transfer_reference || 'n/a';
+                setTransferResult({
+                  success: true,
+                  ref,
+                  message: `₦${BACKLOG_AMOUNT.toLocaleString()} sent. Ref: ${ref}`,
+                });
+                showAlert('Transfer Successful', `₦${BACKLOG_AMOUNT.toLocaleString()} sent to Socially.ng.\n\nPaystack ref: ${ref}`);
+              } else {
+                const msg = data?.error || 'Unknown error from transfer function';
+                setTransferResult({ success: false, ref: '', message: msg });
+                showAlert('Transfer Failed', msg);
+              }
+            } catch (err: any) {
+              const msg = err?.message || 'Unexpected error';
+              setTransferResult({ success: false, ref: '', message: msg });
+              showAlert('Transfer Error', msg);
+            } finally {
+              setTransferring(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -116,6 +193,64 @@ export default function ProfileScreen() {
             ))}
           </View>
         </View>
+
+        {/* ── Admin panel — visible only to ADMIN_EMAIL ── */}
+        {isAdmin ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Admin</Text>
+            <View style={styles.adminCard}>
+              <View style={styles.adminHeader}>
+                <MaterialIcons name="admin-panel-settings" size={18} color={Colors.warning} />
+                <Text style={styles.adminTitle}>Backlog Transfer</Text>
+              </View>
+              <Text style={styles.adminDesc}>
+                Send ₦{BACKLOG_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} to Socially.ng
+                (Palmpay 6635796668) for failed order{'\n'}
+                <Text style={styles.adminRef}>{BACKLOG_ORDER_REF}</Text>
+              </Text>
+
+              {transferResult ? (
+                <View style={[
+                  styles.resultBadge,
+                  { borderColor: transferResult.success ? Colors.success : Colors.error },
+                ]}>
+                  <MaterialIcons
+                    name={transferResult.success ? 'check-circle' : 'error'}
+                    size={16}
+                    color={transferResult.success ? Colors.success : Colors.error}
+                  />
+                  <Text style={[
+                    styles.resultText,
+                    { color: transferResult.success ? Colors.success : Colors.error },
+                  ]}>
+                    {transferResult.message}
+                  </Text>
+                </View>
+              ) : null}
+
+              <TouchableOpacity
+                style={[styles.adminBtn, transferring && styles.adminBtnDisabled]}
+                onPress={handleAdminTransfer}
+                activeOpacity={0.8}
+                disabled={transferring || transferResult?.success === true}
+              >
+                {transferring ? (
+                  <ActivityIndicator size="small" color={Colors.black} />
+                ) : (
+                  <MaterialIcons name="send" size={16} color={Colors.black} />
+                )}
+                <Text style={styles.adminBtnText}>
+                  {transferring
+                    ? 'Sending...'
+                    : transferResult?.success
+                    ? 'Sent'
+                    : 'Send Transfer'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
+        {/* ──────────────────────────────────────────────── */}
 
         <View style={styles.section}>
           <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.8}>
@@ -209,4 +344,40 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   logoutText: { color: Colors.error, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
+
+  // Admin panel styles
+  adminCard: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.warning,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    gap: Spacing.sm,
+  },
+  adminHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  adminTitle: { color: Colors.warning, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
+  adminDesc: { color: Colors.textSecondary, fontSize: FontSize.sm, lineHeight: 20 },
+  adminRef: { color: Colors.textMuted, fontSize: FontSize.xs, fontFamily: 'monospace' },
+  resultBadge: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+  },
+  resultText: { flex: 1, fontSize: FontSize.xs, lineHeight: 18 },
+  adminBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.warning,
+    borderRadius: Radius.md,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.md,
+    marginTop: Spacing.xs,
+  },
+  adminBtnDisabled: { opacity: 0.6 },
+  adminBtnText: { color: Colors.black, fontWeight: FontWeight.semibold, fontSize: FontSize.sm },
 });

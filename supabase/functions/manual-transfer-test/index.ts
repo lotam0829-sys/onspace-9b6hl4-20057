@@ -3,7 +3,12 @@ import { corsHeaders, handleCors } from '../_shared/cors.ts';
 
 // One-off manual transfer trigger — fires a direct Paystack transfer to the
 // Socially.ng Palmpay account using the same dynamic bank-code lookup logic
-// as purchase-number. Only callable with service role key.
+// as purchase-number.
+//
+// Auth: caller must supply a valid Supabase user JWT whose email matches
+// ADMIN_EMAIL. No service role key is required or exposed to the client.
+
+const ADMIN_EMAIL = 'oluwaferanmionabanjo@gmail.com';
 
 const PAYSTACK_BASE = 'https://api.paystack.co';
 const SOCIALLY_ACCOUNT_NUMBER = '6635796668';
@@ -26,7 +31,6 @@ async function getPalmpayBankCode(secretKey: string): Promise<string> {
 }
 
 async function getOrCreateRecipient(secretKey: string): Promise<string> {
-  // Try to find existing recipient
   const listRes = await fetch(`${PAYSTACK_BASE}/transferrecipient?perPage=100`, {
     headers: { 'Authorization': `Bearer ${secretKey}` },
   });
@@ -42,7 +46,6 @@ async function getOrCreateRecipient(secretKey: string): Promise<string> {
     }
   }
 
-  // Create new recipient with correct bank code
   const bankCode = await getPalmpayBankCode(secretKey);
   const createRes = await fetch(`${PAYSTACK_BASE}/transferrecipient`, {
     method: 'POST',
@@ -72,18 +75,45 @@ Deno.serve(async (req: Request) => {
   if (corsRes) return corsRes;
 
   try {
-    const body = await req.json();
-
-    // Simple passphrase gate — no service role key needed from caller
-    const PASSPHRASE = 'numvault_manual_2024';
-    if (body.passphrase !== PASSPHRASE) {
-      return new Response(JSON.stringify({ error: 'Invalid passphrase' }), {
+    // ── Auth: verify caller is the admin user ────────────────────────────────
+    const authHeader = req.headers.get('Authorization');
+    const token = authHeader?.replace('Bearer ', '');
+    if (!token) {
+      return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
       });
     }
 
-    const amountNaira: number = body.amount_naira; // explicit amount to send
+    const supabaseAdmin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+    );
+
+    // Verify the JWT and extract the user's email
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: `Bearer ${token}` } } },
+    );
+    const { data: { user }, error: authErr } = await supabaseClient.auth.getUser(token);
+    if (authErr || !user) {
+      return new Response(JSON.stringify({ error: 'Invalid or expired token' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 401,
+      });
+    }
+    if (user.email !== ADMIN_EMAIL) {
+      console.warn(`Unauthorized manual-transfer attempt by: ${user.email}`);
+      return new Response(JSON.stringify({ error: 'Forbidden' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 403,
+      });
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
+    const body = await req.json();
+    const amountNaira: number = body.amount_naira;
     const orderReference: string = body.order_reference ?? `manual_${Date.now()}`;
     const triggerReason: string = body.trigger_reason ?? 'manual_backlog_recovery';
 
@@ -96,11 +126,6 @@ Deno.serve(async (req: Request) => {
 
     const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY') ?? '';
     if (!secretKey) throw new Error('PAYSTACK_SECRET_KEY not set');
-
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-    );
 
     const recipientCode = await getOrCreateRecipient(secretKey);
     const amountKobo = Math.round(amountNaira * 100);
@@ -130,7 +155,6 @@ Deno.serve(async (req: Request) => {
     const ref2 = transferData.data?.transfer_code || transferData.data?.reference || transferRef;
     const errMsg = success ? null : (transferData.message || JSON.stringify(transferData));
 
-    // Log to socially_transfers
     await supabaseAdmin.from('socially_transfers').insert({
       order_reference: orderReference,
       amount_transferred: amountNaira,
