@@ -16,24 +16,4 @@ config.resolver.nodeModulesPaths = [
 // and not just symlinked paths from the virtual store.
 config.watchFolders = [projectRoot];
 
-// Fix for pnpm: metro/src/DeltaBundler/getTransformCacheKey.js does
-// require('../../package.json') which resolves to the virtual store root
-// (node_modules/.pnpm/metro@x/node_modules/package.json) — a path that
-// doesn't exist in pnpm's non-hoisted layout. Intercept and redirect to
-// the actual metro package.json one level up.
-const originalResolveRequest = config.resolver.resolveRequest;
-config.resolver.resolveRequest = (context, moduleName, platform) => {
-  if (
-    moduleName === '../../package.json' &&
-    context.originModulePath.includes('/metro/src/DeltaBundler/')
-  ) {
-    const metroRoot = context.originModulePath.split('/metro/src/')[0] + '/metro';
-    return { type: 'sourceFile', filePath: path.join(metroRoot, 'package.json') };
-  }
-  if (originalResolveRequest) {
-    return originalResolveRequest(context, moduleName, platform);
-  }
-  return context.resolveRequest(context, moduleName, platform);
-};
-
 module.exports = config;
