@@ -52,27 +52,47 @@ Deno.serve(async (req: Request) => {
       }
 
       // ── Wallet top-up ──────────────────────────────────────────────────────
+      // The customer's wallet is credited with the FULL top-up amount.
+      // Paystack's settlement split (71.43% → Socially.ng, 28.57% → NumVault)
+      // is a behind-the-scenes account-funding mechanism and must NOT reduce
+      // the wallet credit — the customer already paid the full amount.
+      //
+      // Idempotency guard: if a credit transaction for this Paystack reference
+      // already exists, a duplicate webhook delivery must NOT credit the wallet
+      // again. This is the single source of truth for wallet funding.
       if (type === 'wallet_topup') {
-        const { data: profile } = await supabaseAdmin
-          .from('user_profiles')
-          .select('wallet_balance')
-          .eq('id', userId)
-          .single();
+        // Check for duplicate webhook delivery
+        const { data: existingTx } = await supabaseAdmin
+          .from('transactions')
+          .select('id')
+          .eq('reference', reference)
+          .eq('type', 'credit')
+          .maybeSingle();
 
-        const newBalance = Number(profile?.wallet_balance || 0) + amount;
-        await supabaseAdmin.from('user_profiles')
-          .update({ wallet_balance: newBalance })
-          .eq('id', userId);
+        if (existingTx) {
+          console.log(`Wallet top-up idempotency: reference ${reference} already credited (tx: ${existingTx.id}) — skipping duplicate`);
+        } else {
+          const { data: profile } = await supabaseAdmin
+            .from('user_profiles')
+            .select('wallet_balance')
+            .eq('id', userId)
+            .single();
 
-        await supabaseAdmin.from('transactions').insert({
-          user_id: userId,
-          amount,
-          type: 'credit',
-          reference,
-          description: 'Wallet top-up via Paystack',
-        });
+          const newBalance = Number(profile?.wallet_balance || 0) + amount;
+          await supabaseAdmin.from('user_profiles')
+            .update({ wallet_balance: newBalance })
+            .eq('id', userId);
 
-        console.log(`Wallet credited: ₦${amount} for user ${userId}`);
+          await supabaseAdmin.from('transactions').insert({
+            user_id: userId,
+            amount,
+            type: 'credit',
+            reference,
+            description: 'Wallet top-up via Paystack',
+          });
+
+          console.log(`Wallet credited: ₦${amount} (full top-up) for user ${userId}. Paystack split settled separately to Socially.ng subaccount.`);
+        }
       }
 
       // ── Number purchase — server-side safety net ───────────────────────────

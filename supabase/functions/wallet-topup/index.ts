@@ -44,6 +44,22 @@ Deno.serve(async (req: Request) => {
     // so Socially.ng receives 71.43% — matching the Transfer-based ratio (revenue / 1.4).
     const sociallySubaccountCode = Deno.env.get('SOCIALLY_SUBACCOUNT_CODE');
     const isNumberPurchase = type === 'number_purchase';
+    // Wallet top-ups also require a split: the customer receives the full top-up
+    // amount as purchasing power, but the underlying economics must pre-allocate
+    // the supplier share immediately at payment time.
+    //
+    // Business model (1.4× markup applies equally to wallet funding):
+    //   Supplier allocation = top-up amount ÷ 1.4  → 71.43% → Socially.ng (Palmpay)
+    //   NumVault allocation = top-up amount − supplier allocation → 28.57%
+    //
+    // The Paystack subaccount percentage_charge is set to 28.57 (main keeps 28.57%),
+    // so Socially.ng automatically receives 71.43% at settlement — exactly matching
+    // the 1/1.4 ratio. The customer's wallet is credited with the full top-up amount
+    // by the webhook; the split is purely a settlement/account-funding mechanism and
+    // does NOT reduce the customer's purchasing balance.
+    const isWalletTopup = type === 'wallet_topup';
+    // Apply the subaccount split to BOTH direct number purchases AND wallet top-ups.
+    const requiresSplit = (isNumberPurchase || isWalletTopup) && !!sociallySubaccountCode;
 
     const initPayload: Record<string, unknown> = {
       email,
@@ -58,12 +74,12 @@ Deno.serve(async (req: Request) => {
       },
     };
 
-    if (isNumberPurchase && sociallySubaccountCode) {
+    if (requiresSplit) {
       initPayload.subaccount = sociallySubaccountCode;
       initPayload.bearer = 'account'; // main account absorbs the Paystack fee
-      console.log(`Split payment enabled: subaccount=${sociallySubaccountCode}`);
-    } else if (isNumberPurchase && !sociallySubaccountCode) {
-      console.warn('SOCIALLY_SUBACCOUNT_CODE not set — split payment skipped (Transfer fallback still active)');
+      console.log(`Split payment enabled for type=${type}: subaccount=${sociallySubaccountCode}`);
+    } else if ((isNumberPurchase || isWalletTopup) && !sociallySubaccountCode) {
+      console.warn(`SOCIALLY_SUBACCOUNT_CODE not set — split payment skipped for type=${type}`);
     }
     // ────────────────────────────────────────────────────────────────────────
 
