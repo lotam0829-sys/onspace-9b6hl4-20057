@@ -40,8 +40,8 @@ Deno.serve(async (req: Request) => {
     // bearer: 'account' → main account pays the Paystack transaction fee, so
     // Socially.ng always receives the full split % of the gross charge amount.
     //
-    // percentage_charge on the subaccount is set to 28.57 (main account keeps 28.57%),
-    // so Socially.ng receives 71.43% — matching the Transfer-based ratio (revenue / 1.4).
+    // ⚠️  Paystack definition: percentage_charge = % the SUBACCOUNT receives.
+    // Subaccount is set to 71.43% → Socially.ng receives 71.43%, NumVault keeps 28.57%.
     const sociallySubaccountCode = Deno.env.get('SOCIALLY_SUBACCOUNT_CODE');
     const isNumberPurchase = type === 'number_purchase';
     // Wallet top-ups also require a split: the customer receives the full top-up
@@ -52,9 +52,9 @@ Deno.serve(async (req: Request) => {
     //   Supplier allocation = top-up amount ÷ 1.4  → 71.43% → Socially.ng (Palmpay)
     //   NumVault allocation = top-up amount − supplier allocation → 28.57%
     //
-    // The Paystack subaccount percentage_charge is set to 28.57 (main keeps 28.57%),
-    // so Socially.ng automatically receives 71.43% at settlement — exactly matching
-    // the 1/1.4 ratio. The customer's wallet is credited with the full top-up amount
+    // ⚠️  Paystack definition: percentage_charge = % the SUBACCOUNT receives.
+    // Subaccount is set to 71.43% → Socially.ng receives 71.43%, NumVault keeps 28.57%.
+    // The customer's wallet is credited with the full top-up amount
     // by the webhook; the split is purely a settlement/account-funding mechanism and
     // does NOT reduce the customer's purchasing balance.
     const isWalletTopup = type === 'wallet_topup';

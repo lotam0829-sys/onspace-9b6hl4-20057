@@ -103,9 +103,12 @@ export default function ProfileScreen() {
           note: data.note || '',
           message: '',
         });
+        const title = data.fixed
+          ? 'Split % Corrected'
+          : data.already_existed ? 'Subaccount Found' : 'Subaccount Created';
         showAlert(
-          data.already_existed ? 'Subaccount Found' : 'Subaccount Created',
-          `Code: ${data.subaccount_code}\n\n${data.note}\n\nNext step: add SOCIALLY_SUBACCOUNT_CODE secret in Cloud > Secrets.`,
+          title,
+          `Code: ${data.subaccount_code}\n\n${data.note}`,
         );
       } else {
         const msg = data?.error || 'Unknown error';

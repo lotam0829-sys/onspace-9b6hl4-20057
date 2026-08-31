@@ -1,13 +1,14 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 
-// One-time admin function to create a Paystack subaccount for Socially.ng's Palmpay account.
-// Idempotent: if a subaccount already exists for account number 6635796668, returns existing code.
+// One-time admin function to create/verify the Paystack subaccount for Socially.ng's Palmpay account.
+// Idempotent: if a subaccount already exists for account number 6635796668, returns existing code
+// and auto-corrects the percentage_charge if it is wrong.
 //
-// percentage_charge: 28.57
-//   → Per Paystack docs: "percentage_charge represents the % the MAIN account keeps"
-//   → Main account keeps 28.57%, Socially.ng subaccount receives 71.43%
-//   → This matches the current Transfer-based cost-recovery ratio (revenue / 1.4 = 71.43%)
+// ⚠️  PAYSTACK DEFINITION:
+//     percentage_charge = the % the SUBACCOUNT receives.
+//     So percentage_charge: 71.43 → Socially.ng gets 71.43%, NumVault keeps 28.57%.
+//     (Earlier builds had this set to 28.57 — backwards — causing Socially.ng to receive only 28.57%.)
 //
 // Auth: valid user JWT required, email must match ADMIN_EMAIL.
 
@@ -15,8 +16,10 @@ const ADMIN_EMAIL = 'oluwaferanmionabanjo@gmail.com';
 const PAYSTACK_BASE = 'https://api.paystack.co';
 const SOCIALLY_ACCOUNT_NUMBER = '6635796668';
 const SOCIALLY_ACCOUNT_NAME = 'Riteweb Digital Services-Sim(Paymentpoint)';
-// 71.43% to subaccount = main account keeps 28.57%
-const MAIN_ACCOUNT_PERCENTAGE = 28.57;
+
+// percentage_charge = what the SUBACCOUNT (Socially.ng) receives.
+// 71.43% to Socially.ng = NumVault keeps 28.57% (the 1/1.4 markup ratio).
+const SUBACCOUNT_PERCENTAGE = 71.43;
 
 Deno.serve(async (req: Request) => {
   const corsRes = handleCors(req);
@@ -56,7 +59,7 @@ Deno.serve(async (req: Request) => {
     const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY') ?? '';
     if (!secretKey) throw new Error('PAYSTACK_SECRET_KEY not set');
 
-    // ── Idempotency: check if subaccount already exists ─────────────────────
+    // ── Check if subaccount already exists ──────────────────────────────────
     const listRes = await fetch(`${PAYSTACK_BASE}/subaccount?perPage=100`, {
       headers: { 'Authorization': `Bearer ${secretKey}` },
     });
@@ -64,19 +67,59 @@ Deno.serve(async (req: Request) => {
 
     if (listData.status && Array.isArray(listData.data)) {
       const existing = listData.data.find(
-        (s: { account_number?: string; subaccount_code?: string }) =>
+        (s: { account_number?: string; subaccount_code?: string; percentage_charge?: number }) =>
           s.account_number === SOCIALLY_ACCOUNT_NUMBER,
       );
+
       if (existing?.subaccount_code) {
-        console.log(`Subaccount already exists: ${existing.subaccount_code}`);
+        const currentPct = Number(existing.percentage_charge);
+        const needsFix = Math.abs(currentPct - SUBACCOUNT_PERCENTAGE) > 0.1;
+
+        if (needsFix) {
+          // ── Auto-correct: update percentage_charge to correct value ──────────
+          console.log(`Subaccount ${existing.subaccount_code} has wrong percentage_charge=${currentPct}, updating to ${SUBACCOUNT_PERCENTAGE}`);
+
+          const patchRes = await fetch(`${PAYSTACK_BASE}/subaccount/${existing.subaccount_code}`, {
+            method: 'PUT',
+            headers: {
+              'Authorization': `Bearer ${secretKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              percentage_charge: SUBACCOUNT_PERCENTAGE,
+            }),
+          });
+          const patchData = await patchRes.json();
+          console.log('Patch subaccount response:', JSON.stringify(patchData));
+
+          const updatedPct = patchData.data?.percentage_charge ?? SUBACCOUNT_PERCENTAGE;
+
+          return new Response(JSON.stringify({
+            success: true,
+            already_existed: true,
+            fixed: true,
+            subaccount_code: existing.subaccount_code,
+            account_number: SOCIALLY_ACCOUNT_NUMBER,
+            percentage_charge_was: currentPct,
+            percentage_charge_now: updatedPct,
+            note: `FIXED: percentage_charge updated from ${currentPct}% to ${updatedPct}%. Socially.ng (subaccount) now receives ${updatedPct}%, NumVault keeps ${(100 - updatedPct).toFixed(2)}%.`,
+            next_step: 'Verify SOCIALLY_SUBACCOUNT_CODE secret is set. New purchases will now apply the corrected split.',
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+          // ──────────────────────────────────────────────────────────────────
+        }
+
+        // Already correct
+        console.log(`Subaccount already exists and correct: ${existing.subaccount_code}`);
         return new Response(JSON.stringify({
           success: true,
           already_existed: true,
+          fixed: false,
           subaccount_code: existing.subaccount_code,
           account_number: SOCIALLY_ACCOUNT_NUMBER,
-          percentage_charge: existing.percentage_charge,
-          note: `percentage_charge=${existing.percentage_charge} means main account keeps ${existing.percentage_charge}%, Socially.ng receives ${(100 - Number(existing.percentage_charge)).toFixed(2)}%`,
-          next_step: `Add this as a Supabase secret named SOCIALLY_SUBACCOUNT_CODE with value: ${existing.subaccount_code}`,
+          percentage_charge: currentPct,
+          note: `percentage_charge=${currentPct} — Socially.ng (subaccount) receives ${currentPct}%, NumVault keeps ${(100 - currentPct).toFixed(2)}%. Split is correctly configured.`,
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
@@ -100,8 +143,8 @@ Deno.serve(async (req: Request) => {
     // ────────────────────────────────────────────────────────────────────────
 
     // ── Create subaccount ────────────────────────────────────────────────────
-    // percentage_charge = what the MAIN account keeps (per Paystack docs).
-    // We want Socially.ng to receive 71.43% → main keeps 28.57%.
+    // percentage_charge = what the SUBACCOUNT (Socially.ng) receives.
+    // 71.43% → Socially.ng; 28.57% → NumVault main account.
     const createRes = await fetch(`${PAYSTACK_BASE}/subaccount`, {
       method: 'POST',
       headers: {
@@ -112,8 +155,8 @@ Deno.serve(async (req: Request) => {
         business_name: SOCIALLY_ACCOUNT_NAME,
         settlement_bank: palmpay.code,
         account_number: SOCIALLY_ACCOUNT_NUMBER,
-        percentage_charge: MAIN_ACCOUNT_PERCENTAGE,
-        description: 'NumVault — Socially.ng cost-recovery split (71.43% of each number purchase)',
+        percentage_charge: SUBACCOUNT_PERCENTAGE,
+        description: 'NumVault — Socially.ng cost-recovery split (subaccount receives 71.43% of each sale)',
         primary_contact_email: ADMIN_EMAIL,
       }),
     });
@@ -132,7 +175,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const subaccountCode = createData.data.subaccount_code;
-    console.log(`Subaccount created: ${subaccountCode} (percentage_charge: ${MAIN_ACCOUNT_PERCENTAGE})`);
+    console.log(`Subaccount created: ${subaccountCode} (percentage_charge: ${SUBACCOUNT_PERCENTAGE})`);
 
     return new Response(JSON.stringify({
       success: true,
@@ -141,8 +184,8 @@ Deno.serve(async (req: Request) => {
       account_number: SOCIALLY_ACCOUNT_NUMBER,
       bank_code: palmpay.code,
       bank_name: palmpay.name,
-      percentage_charge: MAIN_ACCOUNT_PERCENTAGE,
-      note: `percentage_charge=${MAIN_ACCOUNT_PERCENTAGE} means main account keeps ${MAIN_ACCOUNT_PERCENTAGE}%, Socially.ng receives ${(100 - MAIN_ACCOUNT_PERCENTAGE).toFixed(2)}%`,
+      percentage_charge: SUBACCOUNT_PERCENTAGE,
+      note: `percentage_charge=${SUBACCOUNT_PERCENTAGE} — Socially.ng receives ${SUBACCOUNT_PERCENTAGE}%, NumVault keeps ${(100 - SUBACCOUNT_PERCENTAGE).toFixed(2)}%.`,
       next_step: `Add this as a Supabase secret named SOCIALLY_SUBACCOUNT_CODE with value: ${subaccountCode}`,
       paystack_response: createData.data,
     }), {
