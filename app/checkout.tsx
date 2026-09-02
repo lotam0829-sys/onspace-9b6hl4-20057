@@ -30,6 +30,7 @@ export default function CheckoutScreen() {
     project_code: string;
     project_name: string;
     price: string;
+    wholesale_price: string; // Socially.ng raw wholesale cost — used for exact Paystack split
   }>();
 
   const [loading, setLoading] = useState(false);
@@ -41,6 +42,11 @@ export default function CheckoutScreen() {
   const callbackFiredRef = React.useRef(false);
 
   const price = parseFloat(params.price || '0');
+  // Wholesale cost from Socially.ng — the exact amount Socially.ng must receive.
+  // Falls back to price/MARKUP (1.4×) if not supplied (defensive).
+  const wholesalePrice = params.wholesale_price
+    ? parseFloat(params.wholesale_price)
+    : price / 1.4;
 
   const parsePurchaseError = (rawMessage: string): { message: string; hint?: string } => {
     const msg = rawMessage.replace(/^Socially:\s*/i, '').trim();
@@ -123,12 +129,16 @@ export default function CheckoutScreen() {
     try {
       // Pass purchase metadata so the webhook safety net can complete the purchase
       // server-side if the WebView never catches the callback (bank transfer, USSD, etc.).
+      // wholesale_cost is passed so wallet-topup can apply an exact transaction_charge
+      // (flat kobo amount = retail − wholesale) instead of relying on percentage_charge,
+      // which can drift due to Math.ceil() rounding on the retail price.
       const data = await initializePayment(user?.email || '', price, 'number_purchase', {
         provider_code: params.provider_code,
         country_code: params.country_code,
         project_code: params.project_code,
         project_name: params.project_name,
         country_name: params.country_name,
+        wholesale_cost: wholesalePrice,
       });
       if (data?.data?.authorization_url) {
         setPaystackRef(data.data.reference);

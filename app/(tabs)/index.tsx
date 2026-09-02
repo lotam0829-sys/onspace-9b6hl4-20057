@@ -287,6 +287,7 @@ export default function HomeScreen() {
         project_code: sheetService.package.project_code,
         project_name: sheetService.package.project_name,
         price: String(sheetService.package.displayPrice),
+        wholesale_price: String(sheetService.package.price),
       };
     } else if (sheetPackage) {
       params = {
@@ -296,6 +297,7 @@ export default function HomeScreen() {
         project_code: sheetPackage.pkg.project_code,
         project_name: sheetPackage.pkg.project_name,
         price: String(sheetPackage.pkg.displayPrice),
+        wholesale_price: String(sheetPackage.pkg.price),
       };
     } else return;
     closeSheet();

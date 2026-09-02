@@ -28,6 +28,30 @@ Deno.serve(async (req: Request) => {
     const { amount, email, type, metadata: extraMeta } = await req.json();
     const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY');
 
+    // ── Wholesale cost for direct number purchases ────────────────────────────
+    // When the client passes wholesale_cost in metadata, we use Paystack's
+    // transaction_charge (a flat kobo amount for the main account) instead of
+    // the subaccount's percentage_charge.
+    //
+    // WHY transaction_charge instead of percentage_charge for number_purchase:
+    //   - displayPrice = Math.ceil(wholesale * 1.4) can differ from wholesale * 1.4
+    //     by up to ₦0.99 due to ceiling rounding.
+    //   - percentage_charge=71.43% on a ceiling'd retail price therefore sends slightly
+    //     the wrong amount to Socially.ng.
+    //   - transaction_charge = round((retail - wholesale) * 100) kobo gives NumVault
+    //     exactly its markup and lets Socially.ng receive the exact wholesale cost.
+    //
+    // Formula:
+    //   transaction_charge (kobo) = round((retail - wholesale) * 100)
+    //   Socially.ng receives:      retail - (transaction_charge / 100)
+    //   NumVault receives:         transaction_charge / 100
+    const wholesaleCost: number | undefined = extraMeta?.wholesale_cost != null
+      ? Number(extraMeta.wholesale_cost)
+      : undefined;
+    // Remove wholesale_cost from metadata before sending to Paystack (internal field)
+    const paystackMeta = extraMeta ? { ...extraMeta } : {};
+    if ('wholesale_cost' in paystackMeta) delete paystackMeta.wholesale_cost;
+
     // Initialize Paystack transaction — supports card + bank transfer
     const reference = `numvault_${user.id.slice(0, 8)}_${Date.now()}`;
     console.log('Initializing Paystack transaction:', reference, 'type:', type);
@@ -70,14 +94,36 @@ Deno.serve(async (req: Request) => {
       metadata: {
         user_id: user.id,
         type: type || 'number_purchase',
-        ...(extraMeta || {}),
+        ...(paystackMeta || {}),
       },
     };
 
     if (requiresSplit) {
       initPayload.subaccount = sociallySubaccountCode;
       initPayload.bearer = 'account'; // main account absorbs the Paystack fee
-      console.log(`Split payment enabled for type=${type}: subaccount=${sociallySubaccountCode}`);
+
+      if (isNumberPurchase && wholesaleCost != null && wholesaleCost > 0) {
+        // ── Exact flat split for direct number purchases ───────────────────────
+        // transaction_charge = what NumVault keeps (markup portion), in kobo.
+        // Socially.ng receives: gross_amount - transaction_charge (exact wholesale).
+        // This is more precise than percentage_charge when Math.ceil() rounding
+        // causes the retail price to differ from wholesale * 1.4 exactly.
+        const numvaultMarkupKobo = Math.round((amount - wholesaleCost) * 100);
+        initPayload.transaction_charge = numvaultMarkupKobo;
+        console.log(
+          `Split [number_purchase]: retail=₦${amount}, wholesale=₦${wholesaleCost}, ` +
+          `transaction_charge=${numvaultMarkupKobo}kobo (₦${numvaultMarkupKobo / 100}), ` +
+          `Socially.ng=₦${(amount - numvaultMarkupKobo / 100).toFixed(2)}, subaccount=${sociallySubaccountCode}`
+        );
+      } else if (isWalletTopup) {
+        // Wallet top-up: use the subaccount's percentage_charge (71.43%).
+        // No transaction_charge override — the 1.4× economics apply to the full
+        // top-up amount and percentage_charge=71.43 is exact for round amounts.
+        console.log(`Split [wallet_topup]: amount=₦${amount}, subaccount=${sociallySubaccountCode} (using percentage_charge=71.43%)`);
+      } else {
+        // number_purchase without wholesale_cost passed (defensive fallback)
+        console.warn(`Split [number_purchase]: no wholesale_cost supplied — falling back to percentage_charge=71.43% for amount=₦${amount}`);
+      }
     } else if ((isNumberPurchase || isWalletTopup) && !sociallySubaccountCode) {
       console.warn(`SOCIALLY_SUBACCOUNT_CODE not set — split payment skipped for type=${type}`);
     }
