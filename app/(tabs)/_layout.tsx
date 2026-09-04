@@ -9,10 +9,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/template';
 import { useWallet } from '@/hooks/useWallet';
+import { registerPushToken } from '@/services/notificationService';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+
+  // Register push token once when user is authenticated so server-side functions
+  // (auto-expire-orders) can send push notifications after background refunds.
+  useEffect(() => {
+    if (user) registerPushToken();
+  }, [user?.id]);
 
   const tabBarStyle = {
     height: Platform.select({

@@ -57,10 +57,13 @@ export default function NumberDisplayScreen() {
     // or expired (e.g. reopened from the Orders list), skip the timer entirely
     // to avoid incorrectly re-running expiry logic on a finished order.
     if (data.status !== 'pending' || data.otp) {
-      // For completed/expired orders set the visual state correctly.
       if (data.status === 'expired') {
         setExpired(true);
         setTimeLeft(0);
+        // Show the refund-processed message immediately — the refund was already
+        // handled either by expire-order (client-triggered) or auto-expire-orders
+        // (server-side cron). No need to call expire-order again.
+        setRefundAmount(Number(data.amount_paid));
       }
       return; // ← do NOT start timer or polling
     }

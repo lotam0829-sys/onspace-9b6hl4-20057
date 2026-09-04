@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import { getSupabaseClient } from '@/template';
 
 // Configure how notifications are displayed when the app is in the foreground
 Notifications.setNotificationHandler({
@@ -21,6 +22,32 @@ export async function requestNotificationPermissions(): Promise<boolean> {
 
   const { status } = await Notifications.requestPermissionsAsync();
   return status === 'granted';
+}
+
+// Register the device's Expo push token in user_profiles so server-side
+// functions (e.g. auto-expire-orders) can send push notifications.
+export async function registerPushToken(): Promise<void> {
+  if (Platform.OS === 'web') return;
+  try {
+    const granted = await requestNotificationPermissions();
+    if (!granted) return;
+    const tokenData = await Notifications.getExpoPushTokenAsync();
+    const pushToken = tokenData.data;
+    if (!pushToken) return;
+
+    const supabase = getSupabaseClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    await supabase
+      .from('user_profiles')
+      .update({ push_token: pushToken })
+      .eq('id', user.id);
+
+    console.log('Push token registered:', pushToken);
+  } catch (e) {
+    console.warn('Failed to register push token:', e);
+  }
 }
 
 export async function sendOTPReceivedNotification(platform: string, otp: string) {

@@ -1,7 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  StatusBar, ActivityIndicator,
+  StatusBar, ActivityIndicator, TextInput,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -23,15 +23,36 @@ const STATUS_ICONS = {
   expired: 'cancel',
 };
 
+type StatusFilter = 'all' | 'pending' | 'completed' | 'expired';
+
+const STATUS_FILTER_LABELS: { key: StatusFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'pending', label: 'Pending' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'expired', label: 'Expired' },
+];
+
 export default function OrdersScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { orders, loading, refreshOrders } = useOrders();
   const { user } = useAuth();
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [serviceSearch, setServiceSearch] = useState('');
 
   useEffect(() => {
     if (user) refreshOrders();
   }, [user]);
+
+  const filteredOrders = useMemo(() => {
+    return orders.filter((o) => {
+      const matchStatus = statusFilter === 'all' || o.status === statusFilter;
+      const matchService = !serviceSearch.trim() ||
+        o.project_name.toLowerCase().includes(serviceSearch.toLowerCase()) ||
+        o.country_name.toLowerCase().includes(serviceSearch.toLowerCase());
+      return matchStatus && matchService;
+    });
+  }, [orders, statusFilter, serviceSearch]);
 
   const handleOrderPress = async (orderId: string) => {
     await Haptics.selectionAsync();
@@ -63,15 +84,81 @@ export default function OrdersScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Search bar */}
+      <View style={styles.searchWrap}>
+        <MaterialIcons name="search" size={16} color={Colors.textMuted} />
+        <TextInput
+          style={styles.searchInput}
+          value={serviceSearch}
+          onChangeText={setServiceSearch}
+          placeholder="Search by service or country..."
+          placeholderTextColor={Colors.textMuted}
+        />
+        {serviceSearch.length > 0 && (
+          <TouchableOpacity onPress={() => setServiceSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <MaterialIcons name="close" size={14} color={Colors.textMuted} />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Status filter chips */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.chipRow}
+      >
+        {STATUS_FILTER_LABELS.map(({ key, label }) => {
+          const count = key === 'all' ? orders.length : orders.filter((o) => o.status === key).length;
+          const active = statusFilter === key;
+          return (
+            <TouchableOpacity
+              key={key}
+              style={[styles.chip, active && styles.chipActive, key !== 'all' && { borderColor: `${STATUS_COLORS[key as keyof typeof STATUS_COLORS]}40` }]}
+              onPress={async () => {
+                await Haptics.selectionAsync();
+                setStatusFilter(key);
+              }}
+              activeOpacity={0.8}
+            >
+              {key !== 'all' && (
+                <MaterialIcons
+                  name={STATUS_ICONS[key as keyof typeof STATUS_ICONS] as any}
+                  size={12}
+                  color={active ? '#fff' : STATUS_COLORS[key as keyof typeof STATUS_COLORS]}
+                />
+              )}
+              <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+              <View style={[styles.chipBadge, active && styles.chipBadgeActive]}>
+                <Text style={[styles.chipBadgeText, active && styles.chipBadgeTextActive]}>{count}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator color={Colors.primary} size="large" />
         </View>
-      ) : orders.length === 0 ? (
+      ) : filteredOrders.length === 0 ? (
         <View style={styles.empty}>
           <MaterialIcons name="receipt-long" size={56} color={Colors.textMuted} />
-          <Text style={styles.emptyTitle}>No Orders Yet</Text>
-          <Text style={styles.emptyText}>Your purchased verification numbers will appear here</Text>
+          <Text style={styles.emptyTitle}>
+            {orders.length === 0 ? 'No Orders Yet' : 'No matches'}
+          </Text>
+          <Text style={styles.emptyText}>
+            {orders.length === 0
+              ? 'Your purchased verification numbers will appear here'
+              : 'Try a different status or clear the search'}
+          </Text>
+          {orders.length > 0 && (
+            <TouchableOpacity
+              style={styles.clearBtn}
+              onPress={() => { setStatusFilter('all'); setServiceSearch(''); }}
+            >
+              <Text style={styles.clearBtnText}>Clear filters</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
         <ScrollView
@@ -79,7 +166,7 @@ export default function OrdersScreen() {
           style={{ flex: 1 }}
           contentContainerStyle={{ padding: Spacing.lg }}
         >
-          {orders.map((order) => (
+          {filteredOrders.map((order) => (
             <TouchableOpacity
               key={order.id}
               style={styles.orderCard}
@@ -252,4 +339,71 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     fontWeight: FontWeight.medium,
   },
+
+  // Search bar
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    height: 42,
+  },
+  searchInput: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: FontSize.sm,
+    includeFontPadding: false,
+  },
+
+  // Filter chips
+  chipRow: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.md,
+    gap: Spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.full,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    minHeight: 34,
+  },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipText: { color: Colors.textSecondary, fontSize: 12, fontWeight: FontWeight.semibold },
+  chipTextActive: { color: Colors.black, fontWeight: FontWeight.bold },
+  chipBadge: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.full,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    minWidth: 20,
+    alignItems: 'center',
+  },
+  chipBadgeActive: { backgroundColor: 'rgba(0,0,0,0.20)' },
+  chipBadgeText: { color: Colors.textMuted, fontSize: 10, fontWeight: FontWeight.bold },
+  chipBadgeTextActive: { color: Colors.black },
+
+  // Clear filter button
+  clearBtn: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 10,
+  },
+  clearBtnText: { color: Colors.textSecondary, fontSize: FontSize.sm },
 });

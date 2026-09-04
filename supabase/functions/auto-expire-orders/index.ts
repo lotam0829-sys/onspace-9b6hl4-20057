@@ -124,6 +124,35 @@ Deno.serve(async (req: Request) => {
       });
 
       console.log(`auto-expire-orders: refunded ₦${paidAmount} to user ${userId} for order ${orderId}`);
+
+      // Send push notification to user if they have a registered push token
+      try {
+        const { data: profileForPush } = await supabaseAdmin
+          .from('user_profiles')
+          .select('push_token')
+          .eq('id', userId)
+          .single();
+
+        if (profileForPush?.push_token) {
+          await fetch('https://exp.host/--/api/v2/push/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: profileForPush.push_token,
+              title: '💰 Refund Processed',
+              body: `No OTP was received for ${order.project_name || 'your purchase'}. ₦${paidAmount.toLocaleString()} has been refunded to your wallet.`,
+              data: { type: 'auto_refund', order_id: orderId, amount: paidAmount },
+              sound: 'default',
+              priority: 'high',
+            }),
+          });
+          console.log(`auto-expire-orders: push notification sent to user ${userId}`);
+        }
+      } catch (pushErr) {
+        // Non-fatal — refund already succeeded; just log the push failure
+        console.warn(`auto-expire-orders: push notification failed for user ${userId}:`, pushErr);
+      }
+
       expired.push(orderId);
     }
 
