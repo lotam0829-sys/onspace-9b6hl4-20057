@@ -235,7 +235,7 @@ export default function NumberDisplayScreen() {
         <TouchableOpacity
           onPress={async () => {
             await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.push('/(tabs)/orders');
+            router.back();
           }}
           style={styles.backBtn}
         >

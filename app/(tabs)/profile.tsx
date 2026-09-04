@@ -253,7 +253,7 @@ export default function ProfileScreen() {
               style={[styles.menuRow, styles.supportRow]}
               onPress={async () => {
                 await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                Linking.openURL('https://www.instagram.com/direct/t/17846286908476817/');
+                Linking.openURL('https://ig.me/m/num.vault');
               }}
               activeOpacity={0.7}
             >
