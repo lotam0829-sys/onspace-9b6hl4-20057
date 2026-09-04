@@ -32,6 +32,7 @@ export default function NumberDisplayScreen() {
   const [otpRequested, setOtpRequested] = useState(false);
   const [refundAmount, setRefundAmount] = useState<number | null>(null);
   const [refundError, setRefundError] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
 
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -49,6 +50,7 @@ export default function NumberDisplayScreen() {
 
   const loadOrderAndMaybeStartTimer = async () => {
     const data = await fetchOrder(order_id);
+    setInitialLoading(false);
     if (!data) return;
     setOrder(data);
 
@@ -248,6 +250,11 @@ export default function NumberDisplayScreen() {
         <View style={{ width: 36 }} />
       </View>
 
+      {initialLoading ? (
+        <View style={styles.loadingCenter}>
+          <ActivityIndicator color={Colors.primary} size="large" />
+        </View>
+      ) : (
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}
@@ -471,12 +478,14 @@ export default function NumberDisplayScreen() {
           <MaterialIcons name="chevron-right" size={18} color={Colors.textSecondary} />
         </TouchableOpacity>
       </ScrollView>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
