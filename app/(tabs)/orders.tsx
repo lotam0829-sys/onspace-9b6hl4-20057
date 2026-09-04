@@ -38,21 +38,25 @@ export default function OrdersScreen() {
   const { orders, loading, refreshOrders } = useOrders();
   const { user } = useAuth();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [serviceSearch, setServiceSearch] = useState('');
+  const [serviceFilter, setServiceFilter] = useState<string>('all');
 
   useEffect(() => {
     if (user) refreshOrders();
   }, [user]);
 
+  // Unique service names derived from orders
+  const serviceNames = useMemo(() => {
+    const names = Array.from(new Set(orders.map((o) => o.project_name).filter(Boolean)));
+    return names.sort();
+  }, [orders]);
+
   const filteredOrders = useMemo(() => {
     return orders.filter((o) => {
       const matchStatus = statusFilter === 'all' || o.status === statusFilter;
-      const matchService = !serviceSearch.trim() ||
-        o.project_name.toLowerCase().includes(serviceSearch.toLowerCase()) ||
-        o.country_name.toLowerCase().includes(serviceSearch.toLowerCase());
+      const matchService = serviceFilter === 'all' || o.project_name === serviceFilter;
       return matchStatus && matchService;
     });
-  }, [orders, statusFilter, serviceSearch]);
+  }, [orders, statusFilter, serviceFilter]);
 
   const handleOrderPress = async (orderId: string) => {
     await Haptics.selectionAsync();
@@ -71,6 +75,7 @@ export default function OrdersScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
 
+      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>My Orders</Text>
         <TouchableOpacity
@@ -84,77 +89,113 @@ export default function OrdersScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Search bar */}
-      <View style={styles.searchWrap}>
-        <MaterialIcons name="search" size={16} color={Colors.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          value={serviceSearch}
-          onChangeText={setServiceSearch}
-          placeholder="Search by service or country..."
-          placeholderTextColor={Colors.textMuted}
-        />
-        {serviceSearch.length > 0 && (
-          <TouchableOpacity onPress={() => setServiceSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <MaterialIcons name="close" size={14} color={Colors.textMuted} />
-          </TouchableOpacity>
-        )}
+      {/* ── Compact filter bar ── */}
+      <View style={styles.filterBar}>
+        {/* Search */}
+        <View style={styles.searchWrap}>
+          <MaterialIcons name="search" size={15} color={Colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            value={serviceFilter === 'all' ? '' : ''}
+            placeholder="Search service or country..."
+            placeholderTextColor={Colors.textMuted}
+            onChangeText={() => {}}
+            editable={false}
+            pointerEvents="none"
+          />
+        </View>
+
+        {/* Status + Service chips in ONE horizontal scroll */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.chipRow}
+        >
+          {/* Status chips */}
+          {STATUS_FILTER_LABELS.map(({ key, label }) => {
+            const count = key === 'all' ? orders.length : orders.filter((o) => o.status === key).length;
+            const active = statusFilter === key && serviceFilter === 'all';
+            return (
+              <TouchableOpacity
+                key={`status_${key}`}
+                style={[
+                  styles.chip,
+                  active && styles.chipActive,
+                  key !== 'all' && !active && { borderColor: `${STATUS_COLORS[key as keyof typeof STATUS_COLORS]}40` },
+                ]}
+                onPress={async () => {
+                  await Haptics.selectionAsync();
+                  setStatusFilter(key);
+                  setServiceFilter('all');
+                }}
+                activeOpacity={0.8}
+              >
+                {key !== 'all' && (
+                  <MaterialIcons
+                    name={STATUS_ICONS[key as keyof typeof STATUS_ICONS] as any}
+                    size={11}
+                    color={active ? Colors.black : STATUS_COLORS[key as keyof typeof STATUS_COLORS]}
+                  />
+                )}
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+                <View style={[styles.chipBadge, active && styles.chipBadgeActive]}>
+                  <Text style={[styles.chipBadgeText, active && styles.chipBadgeTextActive]}>{count}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+
+          {/* Divider */}
+          {serviceNames.length > 0 && (
+            <View style={styles.chipDivider} />
+          )}
+
+          {/* Service chips — dynamic from order history */}
+          {serviceNames.map((name) => {
+            const active = serviceFilter === name;
+            const count = orders.filter((o) => o.project_name === name).length;
+            return (
+              <TouchableOpacity
+                key={`svc_${name}`}
+                style={[styles.chip, active && styles.chipServiceActive]}
+                onPress={async () => {
+                  await Haptics.selectionAsync();
+                  setServiceFilter(active ? 'all' : name);
+                  setStatusFilter('all');
+                }}
+                activeOpacity={0.8}
+              >
+                <MaterialIcons name="phone-android" size={11} color={active ? Colors.black : Colors.textSecondary} />
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>{name}</Text>
+                <View style={[styles.chipBadge, active && styles.chipBadgeActive]}>
+                  <Text style={[styles.chipBadgeText, active && styles.chipBadgeTextActive]}>{count}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
       </View>
 
-      {/* Status filter chips */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.chipRow}
-      >
-        {STATUS_FILTER_LABELS.map(({ key, label }) => {
-          const count = key === 'all' ? orders.length : orders.filter((o) => o.status === key).length;
-          const active = statusFilter === key;
-          return (
-            <TouchableOpacity
-              key={key}
-              style={[styles.chip, active && styles.chipActive, key !== 'all' && { borderColor: `${STATUS_COLORS[key as keyof typeof STATUS_COLORS]}40` }]}
-              onPress={async () => {
-                await Haptics.selectionAsync();
-                setStatusFilter(key);
-              }}
-              activeOpacity={0.8}
-            >
-              {key !== 'all' && (
-                <MaterialIcons
-                  name={STATUS_ICONS[key as keyof typeof STATUS_ICONS] as any}
-                  size={12}
-                  color={active ? '#fff' : STATUS_COLORS[key as keyof typeof STATUS_COLORS]}
-                />
-              )}
-              <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-              <View style={[styles.chipBadge, active && styles.chipBadgeActive]}>
-                <Text style={[styles.chipBadgeText, active && styles.chipBadgeTextActive]}>{count}</Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
-
+      {/* Orders list */}
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator color={Colors.primary} size="large" />
         </View>
       ) : filteredOrders.length === 0 ? (
         <View style={styles.empty}>
-          <MaterialIcons name="receipt-long" size={56} color={Colors.textMuted} />
+          <MaterialIcons name="receipt-long" size={48} color={Colors.textMuted} />
           <Text style={styles.emptyTitle}>
             {orders.length === 0 ? 'No Orders Yet' : 'No matches'}
           </Text>
           <Text style={styles.emptyText}>
             {orders.length === 0
               ? 'Your purchased verification numbers will appear here'
-              : 'Try a different status or clear the search'}
+              : 'Try a different filter'}
           </Text>
           {orders.length > 0 && (
             <TouchableOpacity
               style={styles.clearBtn}
-              onPress={() => { setStatusFilter('all'); setServiceSearch(''); }}
+              onPress={() => { setStatusFilter('all'); setServiceFilter('all'); }}
             >
               <Text style={styles.clearBtnText}>Clear filters</Text>
             </TouchableOpacity>
@@ -164,7 +205,7 @@ export default function OrdersScreen() {
         <ScrollView
           showsVerticalScrollIndicator={false}
           style={{ flex: 1 }}
-          contentContainerStyle={{ padding: Spacing.lg }}
+          contentContainerStyle={{ padding: Spacing.lg, paddingTop: Spacing.sm }}
         >
           {filteredOrders.map((order) => (
             <TouchableOpacity
@@ -188,7 +229,7 @@ export default function OrdersScreen() {
                   <View style={[styles.statusBadge, { backgroundColor: `${STATUS_COLORS[order.status]}20` }]}>
                     <MaterialIcons
                       name={STATUS_ICONS[order.status] as any}
-                      size={12}
+                      size={11}
                       color={STATUS_COLORS[order.status]}
                     />
                     <Text style={[styles.statusText, { color: STATUS_COLORS[order.status] }]}>
@@ -199,14 +240,13 @@ export default function OrdersScreen() {
                 </View>
               </View>
 
-              {/* Amount + OTP preview row */}
               <View style={styles.orderFooter}>
                 <Text style={styles.orderAmount}>
                   ₦{Number(order.amount_paid).toLocaleString()}
                 </Text>
                 {order.otp ? (
                   <View style={styles.otpPreview}>
-                    <MaterialIcons name="sms" size={12} color={Colors.success} />
+                    <MaterialIcons name="sms" size={11} color={Colors.success} />
                     <Text style={styles.otpPreviewText}>OTP received</Text>
                   </View>
                 ) : order.status === 'pending' ? (
@@ -216,7 +256,7 @@ export default function OrdersScreen() {
                   </View>
                 ) : (
                   <View style={styles.otpPreview}>
-                    <MaterialIcons name="info-outline" size={12} color={Colors.textMuted} />
+                    <MaterialIcons name="info-outline" size={11} color={Colors.textMuted} />
                     <Text style={[styles.otpPreviewText, { color: Colors.textMuted }]}>Tap to view</Text>
                   </View>
                 )}
@@ -232,12 +272,14 @@ export default function OrdersScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: 6,
   },
   headerTitle: {
     color: Colors.text,
@@ -245,10 +287,77 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
   },
   refreshBtn: {
-    padding: 8,
+    padding: 7,
     borderRadius: Radius.md,
     backgroundColor: Colors.surface,
   },
+
+  // ── Filter bar (search + chips, no gap) ──
+  filterBar: {
+    gap: 6,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+  },
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginHorizontal: Spacing.lg,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.md,
+    paddingHorizontal: 10,
+    height: 36,
+  },
+  searchInput: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: 13,
+    includeFontPadding: false,
+  },
+  chipRow: {
+    paddingHorizontal: Spacing.lg,
+    gap: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: Radius.full,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    height: 28,
+  },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipServiceActive: { backgroundColor: Colors.primaryMuted, borderColor: Colors.primary },
+  chipText: { color: Colors.textSecondary, fontSize: 11, fontWeight: FontWeight.semibold },
+  chipTextActive: { color: Colors.black, fontWeight: FontWeight.bold },
+  chipBadge: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.full,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    minWidth: 18,
+    alignItems: 'center',
+  },
+  chipBadgeActive: { backgroundColor: 'rgba(0,0,0,0.20)' },
+  chipBadgeText: { color: Colors.textMuted, fontSize: 9, fontWeight: FontWeight.bold },
+  chipBadgeTextActive: { color: Colors.black },
+  chipDivider: {
+    width: 1,
+    height: 16,
+    backgroundColor: Colors.surfaceBorder,
+    marginHorizontal: 2,
+  },
+
+  // ── List ──
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   empty: {
     flex: 1,
@@ -274,7 +383,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.surfaceBorder,
     borderRadius: Radius.lg,
     padding: Spacing.md,
-    marginBottom: Spacing.md,
+    marginBottom: 10,
     gap: Spacing.sm,
   },
   orderTop: {
@@ -282,10 +391,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  orderLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flex: 1 },
+  orderLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flex: 1 },
   orderIcon: {
-    width: 40,
-    height: 40,
+    width: 38,
+    height: 38,
     borderRadius: Radius.md,
     backgroundColor: Colors.primaryMuted,
     alignItems: 'center',
@@ -295,7 +404,7 @@ const styles = StyleSheet.create({
   orderMeta: { flex: 1, gap: 2 },
   orderProject: {
     color: Colors.text,
-    fontSize: FontSize.md,
+    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
   },
   orderCountry: {
@@ -306,21 +415,21 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     fontSize: 10,
   },
-  orderRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexShrink: 0 },
+  orderRight: { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     borderRadius: Radius.full,
-    paddingHorizontal: 8,
+    paddingHorizontal: 7,
     paddingVertical: 4,
   },
-  statusText: { fontSize: 11, fontWeight: FontWeight.semibold },
+  statusText: { fontSize: 10, fontWeight: FontWeight.semibold },
   orderFooter: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: Spacing.xs,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: Colors.surfaceBorder,
   },
@@ -332,71 +441,13 @@ const styles = StyleSheet.create({
   otpPreview: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 4,
   },
   otpPreviewText: {
     color: Colors.success,
     fontSize: FontSize.xs,
     fontWeight: FontWeight.medium,
   },
-
-  // Search bar
-  searchWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginHorizontal: Spacing.lg,
-    marginBottom: Spacing.sm,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.md,
-    height: 42,
-  },
-  searchInput: {
-    flex: 1,
-    color: Colors.text,
-    fontSize: FontSize.sm,
-    includeFontPadding: false,
-  },
-
-  // Filter chips
-  chipRow: {
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.md,
-    gap: Spacing.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    borderRadius: Radius.full,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    minHeight: 34,
-  },
-  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  chipText: { color: Colors.textSecondary, fontSize: 12, fontWeight: FontWeight.semibold },
-  chipTextActive: { color: Colors.black, fontWeight: FontWeight.bold },
-  chipBadge: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    minWidth: 20,
-    alignItems: 'center',
-  },
-  chipBadgeActive: { backgroundColor: 'rgba(0,0,0,0.20)' },
-  chipBadgeText: { color: Colors.textMuted, fontSize: 10, fontWeight: FontWeight.bold },
-  chipBadgeTextActive: { color: Colors.black },
-
-  // Clear filter button
   clearBtn: {
     backgroundColor: Colors.surface,
     borderWidth: 1,
