@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, StatusBar,
-  Clipboard, ScrollView, ActivityIndicator,
+  Clipboard, ScrollView, ActivityIndicator, Linking,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -39,8 +39,7 @@ export default function NumberDisplayScreen() {
   useEffect(() => {
     if (!order_id) return;
     requestNotificationPermissions();
-    loadOrder();
-    startTimer();
+    loadOrderAndMaybeStartTimer();
 
     return () => {
       clearInterval(pollRef.current!);
@@ -48,12 +47,75 @@ export default function NumberDisplayScreen() {
     };
   }, [order_id]);
 
-  const loadOrder = async () => {
+  const loadOrderAndMaybeStartTimer = async () => {
     const data = await fetchOrder(order_id);
-    if (data) {
-      setOrder(data);
-      // If order already has OTP, no need to poll
-      if (data.otp || data.status === 'completed') return;
+    if (!data) return;
+    setOrder(data);
+
+    // ── Guard: only start the countdown + expiry logic for orders that are
+    // genuinely still pending with no OTP. If the order is already completed
+    // or expired (e.g. reopened from the Orders list), skip the timer entirely
+    // to avoid incorrectly re-running expiry logic on a finished order.
+    if (data.status !== 'pending' || data.otp) {
+      // For completed/expired orders set the visual state correctly.
+      if (data.status === 'expired') {
+        setExpired(true);
+        setTimeLeft(0);
+      }
+      return; // ← do NOT start timer or polling
+    }
+
+    // Fresh pending order — start the countdown + polling.
+    // Account for time already elapsed since order creation so the displayed
+    // timer matches reality (e.g. if user left and came back).
+    const elapsed = Math.floor((Date.now() - new Date(data.created_at).getTime()) / 1000);
+    const remaining = Math.max(0, OTP_TIMEOUT / 1000 - elapsed);
+
+    if (remaining === 0) {
+      // Already past the window by the time this screen opened — trigger expiry immediately.
+      setExpired(true);
+      setTimeLeft(0);
+      triggerExpiry();
+      return;
+    }
+
+    setTimeLeft(remaining);
+    startTimerFromRemaining(remaining);
+  };
+
+  // Extracted expiry call so it can be reused by both the timer and the
+  // "already past window" guard in loadOrderAndMaybeStartTimer.
+  const triggerExpiry = async () => {
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      const res = await fetch(`${supabaseUrl}/functions/v1/expire-order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ order_id }),
+      });
+      const result = await res.json();
+      if (result.refunded && result.refund_amount) {
+        setRefundAmount(result.refund_amount);
+      } else if (result.already_handled || result.already_expired) {
+        if (result.status === 'completed') {
+          const fresh = await fetchOrder(order_id);
+          if (fresh) {
+            setOrder(fresh);
+            setExpired(false);
+          }
+        }
+      } else {
+        setRefundError(true);
+      }
+    } catch (e) {
+      console.error('expire-order call failed:', e);
+      setRefundError(true);
     }
   };
 
@@ -94,8 +156,11 @@ export default function NumberDisplayScreen() {
     }, OTP_POLL_INTERVAL);
   };
 
-  const startTimer = () => {
-    let remaining = OTP_TIMEOUT / 1000;
+  // startTimerFromRemaining replaces the old startTimer().
+  // It accepts the actual remaining seconds (accounting for elapsed time since
+  // order creation) so the countdown is always accurate when reopening an order.
+  const startTimerFromRemaining = (initialRemaining: number) => {
+    let remaining = initialRemaining;
     timerRef.current = setInterval(async () => {
       remaining -= 1;
       setTimeLeft(remaining);
@@ -103,43 +168,7 @@ export default function NumberDisplayScreen() {
         clearInterval(timerRef.current!);
         clearInterval(pollRef.current!);
         setExpired(true);
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        // Call server-side expire-order function: sets status=expired AND credits wallet
-        try {
-          const { data: { session } } = await supabase.auth.getSession();
-          const token = session?.access_token;
-          const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-          const res = await fetch(`${supabaseUrl}/functions/v1/expire-order`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`,
-            },
-            body: JSON.stringify({ order_id }),
-          });
-          const result = await res.json();
-          if (result.refunded && result.refund_amount) {
-            setRefundAmount(result.refund_amount);
-          } else if (result.already_handled || result.already_expired) {
-            // Status changed between our read and write on the server:
-            // either OTP arrived at the exact moment the timer fired ('completed')
-            // or another expire-order call got there first ('expired').
-            // If 'completed', re-load the order so the OTP is displayed.
-            if (result.status === 'completed') {
-              const fresh = await fetchOrder(order_id);
-              if (fresh) {
-                setOrder(fresh);
-                setExpired(false); // OTP actually arrived
-              }
-            }
-            // If 'expired', a previous call already handled the refund — nothing to do.
-          } else {
-            setRefundError(true);
-          }
-        } catch (e) {
-          console.error('expire-order call failed:', e);
-          setRefundError(true);
-        }
+        await triggerExpiry();
       }
     }, 1000);
   };

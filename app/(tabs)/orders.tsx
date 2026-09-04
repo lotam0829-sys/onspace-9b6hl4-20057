@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   StatusBar, ActivityIndicator,
@@ -9,7 +9,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/template';
 import { useOrders } from '@/hooks/useOrders';
-import { Order } from '@/services/orderService';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
 const STATUS_COLORS = {
@@ -26,22 +25,25 @@ const STATUS_ICONS = {
 
 export default function OrdersScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { orders, loading, refreshOrders } = useOrders();
-  const [expanded, setExpanded] = useState<string | null>(null);
   const { user } = useAuth();
 
   useEffect(() => {
     if (user) refreshOrders();
   }, [user]);
 
-  const toggleExpand = async (id: string) => {
+  const handleOrderPress = async (orderId: string) => {
     await Haptics.selectionAsync();
-    setExpanded(prev => prev === id ? null : id);
+    router.push({ pathname: '/number-display', params: { order_id: orderId } });
   };
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
-    return d.toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleDateString('en-NG', {
+      day: 'numeric', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
   };
 
   return (
@@ -72,12 +74,16 @@ export default function OrdersScreen() {
           <Text style={styles.emptyText}>Your purchased verification numbers will appear here</Text>
         </View>
       ) : (
-        <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ padding: Spacing.lg }}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          style={{ flex: 1 }}
+          contentContainerStyle={{ padding: Spacing.lg }}
+        >
           {orders.map((order) => (
             <TouchableOpacity
               key={order.id}
               style={styles.orderCard}
-              onPress={() => toggleExpand(order.id)}
+              onPress={() => handleOrderPress(order.id)}
               activeOpacity={0.8}
             >
               <View style={styles.orderTop}>
@@ -85,9 +91,10 @@ export default function OrdersScreen() {
                   <View style={styles.orderIcon}>
                     <MaterialIcons name="phone-android" size={20} color={Colors.primary} />
                   </View>
-                  <View>
+                  <View style={styles.orderMeta}>
                     <Text style={styles.orderProject}>{order.project_name}</Text>
                     <Text style={styles.orderCountry}>{order.country_name}</Text>
+                    <Text style={styles.orderDate}>{formatDate(order.created_at)}</Text>
                   </View>
                 </View>
                 <View style={styles.orderRight}>
@@ -101,31 +108,32 @@ export default function OrdersScreen() {
                       {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
                     </Text>
                   </View>
-                  <MaterialIcons
-                    name={expanded === order.id ? "expand-less" : "expand-more"}
-                    size={20}
-                    color={Colors.textMuted}
-                  />
+                  <MaterialIcons name="chevron-right" size={18} color={Colors.textMuted} />
                 </View>
               </View>
 
-              {expanded === order.id && (
-                <View style={styles.orderDetails}>
-                  <View style={styles.detailDivider} />
-
-                  <DetailRow label="Phone Number" value={order.phone_number || "—"} copyable />
-                  {order.otp ? (
-                    <DetailRow label="OTP Code" value={order.otp} copyable highlight />
-                  ) : (
-                    <DetailRow label="OTP Code" value={order.status === 'expired' ? "Not received" : "Waiting..."} />
-                  )}
-                  <DetailRow label="Amount Paid" value={`₦${Number(order.amount_paid).toLocaleString()}`} />
-                  <DetailRow label="Date" value={formatDate(order.created_at)} />
-                  {order.order_reference && (
-                    <DetailRow label="Reference" value={order.order_reference} />
-                  )}
-                </View>
-              )}
+              {/* Amount + OTP preview row */}
+              <View style={styles.orderFooter}>
+                <Text style={styles.orderAmount}>
+                  ₦{Number(order.amount_paid).toLocaleString()}
+                </Text>
+                {order.otp ? (
+                  <View style={styles.otpPreview}>
+                    <MaterialIcons name="sms" size={12} color={Colors.success} />
+                    <Text style={styles.otpPreviewText}>OTP received</Text>
+                  </View>
+                ) : order.status === 'pending' ? (
+                  <View style={styles.otpPreview}>
+                    <ActivityIndicator size={10} color={Colors.warning} />
+                    <Text style={[styles.otpPreviewText, { color: Colors.warning }]}>Awaiting OTP</Text>
+                  </View>
+                ) : (
+                  <View style={styles.otpPreview}>
+                    <MaterialIcons name="info-outline" size={12} color={Colors.textMuted} />
+                    <Text style={[styles.otpPreviewText, { color: Colors.textMuted }]}>Tap to view</Text>
+                  </View>
+                )}
+              </View>
             </TouchableOpacity>
           ))}
           <View style={{ height: 20 }} />
@@ -134,45 +142,6 @@ export default function OrdersScreen() {
     </View>
   );
 }
-
-function DetailRow({ label, value, copyable, highlight }: {
-  label: string; value: string; copyable?: boolean; highlight?: boolean;
-}) {
-  const handleCopy = async () => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // Copy to clipboard
-  };
-
-  return (
-    <View style={detailStyles.row}>
-      <Text style={detailStyles.label}>{label}</Text>
-      <View style={detailStyles.valueRow}>
-        <Text style={[detailStyles.value, highlight && detailStyles.valueHighlight]}>
-          {value}
-        </Text>
-        {copyable && value !== "—" && value !== "Waiting..." && (
-          <TouchableOpacity onPress={handleCopy} style={detailStyles.copyBtn}>
-            <MaterialIcons name="content-copy" size={14} color={Colors.textSecondary} />
-          </TouchableOpacity>
-        )}
-      </View>
-    </View>
-  );
-}
-
-const detailStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: Spacing.xs,
-  },
-  label: { color: Colors.textSecondary, fontSize: FontSize.sm },
-  valueRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  value: { color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  valueHighlight: { color: Colors.primary, fontWeight: FontWeight.bold, fontSize: FontSize.md },
-  copyBtn: { padding: 4 },
-});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
@@ -219,13 +188,14 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     padding: Spacing.md,
     marginBottom: Spacing.md,
+    gap: Spacing.sm,
   },
   orderTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  orderLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  orderLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flex: 1 },
   orderIcon: {
     width: 40,
     height: 40,
@@ -233,7 +203,9 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primaryMuted,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
+  orderMeta: { flex: 1, gap: 2 },
   orderProject: {
     color: Colors.text,
     fontSize: FontSize.md,
@@ -243,7 +215,11 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: FontSize.xs,
   },
-  orderRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  orderDate: {
+    color: Colors.textMuted,
+    fontSize: 10,
+  },
+  orderRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexShrink: 0 },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -253,10 +229,27 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   statusText: { fontSize: 11, fontWeight: FontWeight.semibold },
-  orderDetails: { marginTop: Spacing.sm },
-  detailDivider: {
-    height: 1,
-    backgroundColor: Colors.surfaceBorder,
-    marginBottom: Spacing.sm,
+  orderFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: Spacing.xs,
+    borderTopWidth: 1,
+    borderTopColor: Colors.surfaceBorder,
+  },
+  orderAmount: {
+    color: Colors.primary,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+  },
+  otpPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  otpPreviewText: {
+    color: Colors.success,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
   },
 });

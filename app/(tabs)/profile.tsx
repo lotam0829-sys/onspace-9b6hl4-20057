@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert, getSupabaseClient } from '@/template';
 import { useWallet } from '@/hooks/useWallet';
+import { Linking } from 'react-native';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
@@ -247,6 +248,19 @@ export default function ProfileScreen() {
                 <Text style={styles.menuValue}>{item.value}</Text>
               </View>
             ))}
+            {/* Support / Customer Care link */}
+            <TouchableOpacity
+              style={[styles.menuRow, styles.supportRow]}
+              onPress={async () => {
+                await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                Linking.openURL('https://www.instagram.com/direct/t/17846286908476817/');
+              }}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="support-agent" size={18} color={Colors.primary} />
+              <Text style={[styles.menuLabel, { color: Colors.primary }]}>Support / Customer Care</Text>
+              <MaterialIcons name="open-in-new" size={14} color={Colors.primary} />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -444,6 +458,7 @@ const styles = StyleSheet.create({
   },
   menuLabel: { flex: 1, color: Colors.textSecondary, fontSize: FontSize.sm },
   menuValue: { color: Colors.text, fontSize: FontSize.sm },
+  supportRow: { borderBottomWidth: 0 },
   logoutBtn: {
     flexDirection: 'row',
     alignItems: 'center',
