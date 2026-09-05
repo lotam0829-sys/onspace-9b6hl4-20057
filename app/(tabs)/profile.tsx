@@ -10,6 +10,7 @@ import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert, getSupabaseClient } from '@/template';
 import { useWallet } from '@/hooks/useWallet';
 import { Linking } from 'react-native';
+import * as WebBrowser from 'expo-web-browser';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
@@ -377,6 +378,34 @@ export default function ProfileScreen() {
           </View>
         ) : null}
         {/* ──────────────────────────────────────────────── */}
+
+        {/* Legal */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Legal</Text>
+          <View style={styles.menuCard}>
+            {[
+              { icon: 'privacy-tip', label: 'Privacy Policy', url: 'https://numvault-6fwcjfqw.manus.space/privacy' },
+              { icon: 'gavel', label: 'Terms of Service', url: 'https://numvault-6fwcjfqw.manus.space/terms' },
+            ].map((item, index, arr) => (
+              <TouchableOpacity
+                key={item.label}
+                style={[
+                  styles.menuRow,
+                  index === arr.length - 1 && { borderBottomWidth: 0 },
+                ]}
+                onPress={async () => {
+                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  await WebBrowser.openBrowserAsync(item.url);
+                }}
+                activeOpacity={0.7}
+              >
+                <MaterialIcons name={item.icon as any} size={18} color={Colors.textMuted} />
+                <Text style={[styles.menuLabel, { color: Colors.text }]}>{item.label}</Text>
+                <MaterialIcons name="chevron-right" size={18} color={Colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
 
         <View style={styles.section}>
           <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.8}>
