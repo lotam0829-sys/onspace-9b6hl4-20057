@@ -1,16 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  Platform, StatusBar, ActivityIndicator,
-} from 'react-native';
+import React, { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/template';
-import { useWallet } from '@/hooks/useWallet';
 import { registerPushToken } from '@/services/notificationService';
-import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { Colors } from '@/constants/theme';
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
