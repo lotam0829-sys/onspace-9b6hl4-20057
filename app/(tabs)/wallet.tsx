@@ -5,7 +5,8 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { WebView } from 'react-native-webview';
+import * as WebBrowser from 'expo-web-browser';
+import { Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert } from '@/template';
 import { useWallet } from '@/hooks/useWallet';
@@ -24,7 +25,6 @@ export default function WalletScreen() {
   const [topupModal, setTopupModal] = useState(false);
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
-  const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
 
   const LOW_BALANCE_THRESHOLD = 500;
   const lowBalanceNotifiedRef = React.useRef(false);
@@ -64,13 +64,12 @@ export default function WalletScreen() {
     try {
       // Use saved card if available
       if (hasCard && profile?.card_auth_code) {
-        const result = await chargeWithSavedCard(
+        await chargeWithSavedCard(
           user?.email || '',
           amt,
           profile.card_auth_code,
           'wallet_topup'
         );
-
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setTopupModal(false);
         setAmount('');
@@ -78,36 +77,39 @@ export default function WalletScreen() {
         await refreshProfile();
         await refreshTransactions();
       } else {
-        // Open Paystack WebView — must close topupModal FIRST to avoid stacked modal bug
+        // Initialize payment then open in system browser via expo-web-browser
         const result = await initializePayment(user?.email || '', amt, 'wallet_topup');
         const authUrl = result?.data?.authorization_url;
         if (!authUrl) throw new Error('No payment URL received. Please try again.');
+
+        // Close modal and clear loading BEFORE opening the browser so the UI
+        // never gets stuck if the browser call fails or is dismissed immediately.
         setTopupModal(false);
-        // Small delay to let the first modal fully dismiss before opening WebView
-        setTimeout(() => setWebViewUrl(authUrl), 400);
+        setAmount('');
+        setLoading(false);
+
+        if (Platform.OS === 'ios') {
+          // iOS: in-app browser sheet (smooth UX)
+          await WebBrowser.openBrowserAsync(authUrl, { dismissButtonStyle: 'close' });
+        } else {
+          // Android / Web: open in the system browser via Linking;
+          // openBrowserAsync with FORM_SHEET crashes on Android.
+          await Linking.openURL(authUrl);
+        }
+
+        // Refresh after returning — webhook will have processed by then
+        setTimeout(async () => {
+          await refreshProfile();
+          await refreshTransactions();
+        }, 2500);
+        showAlert('Payment Processed', 'Your wallet will be updated shortly.');
+        return; // loading already false, skip finally
       }
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showAlert('Top-up Failed', e.message);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleWebViewNav = async (url: string) => {
-    if (
-      url.includes('numvault.app/payment/callback') ||
-      url.includes('paystack.com/close') ||
-      url.includes('standard.paystack.co/close')
-    ) {
-      setWebViewUrl(null);
-      setAmount('');
-      // Refresh after short delay to allow webhook processing
-      setTimeout(async () => {
-        await refreshProfile();
-        await refreshTransactions();
-      }, 2500);
-      showAlert('Payment Processed', 'Your wallet will be updated shortly.');
     }
   };
 
@@ -208,7 +210,7 @@ export default function WalletScreen() {
               <Text style={styles.modalSub}>
                 {hasCard
                   ? `Charging saved card •••• ${profile?.card_last4}`
-                  : "You will be directed to Paystack checkout"}
+                  : 'You will be redirected to Paystack Checkout to complete payment. The applicable processing fee will be shown by Paystack before you confirm.'}
               </Text>
 
               {/* Quick amounts */}
@@ -265,27 +267,6 @@ export default function WalletScreen() {
             </View>
           </View>
         </KeyboardAvoidingView>
-      </Modal>
-
-      {/* Paystack WebView */}
-      <Modal visible={!!webViewUrl} animationType="slide" onRequestClose={() => setWebViewUrl(null)}>
-        <View style={[styles.webViewContainer, { paddingTop: insets.top }]}>
-          <View style={styles.webViewHeader}>
-            <TouchableOpacity onPress={() => setWebViewUrl(null)}>
-              <MaterialIcons name="close" size={24} color={Colors.text} />
-            </TouchableOpacity>
-            <Text style={styles.webViewTitle}>Secure Payment</Text>
-            <View style={{ width: 24 }} />
-          </View>
-          {webViewUrl && (
-            <WebView
-              source={{ uri: webViewUrl }}
-              onNavigationStateChange={(state) => handleWebViewNav(state.url)}
-              startInLoadingState
-              renderLoading={() => <ActivityIndicator color={Colors.primary} style={{ flex: 1 }} />}
-            />
-          )}
-        </View>
       </Modal>
     </View>
   );
@@ -432,15 +413,4 @@ const styles = StyleSheet.create({
   topupConfirmText: { color: Colors.black, fontWeight: FontWeight.bold, fontSize: FontSize.md },
   cancelBtn: { alignItems: 'center', paddingVertical: Spacing.sm },
   cancelText: { color: Colors.textSecondary, fontSize: FontSize.sm },
-  webViewContainer: { flex: 1, backgroundColor: Colors.background },
-  webViewHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.surfaceBorder,
-  },
-  webViewTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
 });
