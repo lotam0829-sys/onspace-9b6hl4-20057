@@ -92,7 +92,7 @@ export default function OrdersScreen() {
       {/* ── Compact filter bar ── */}
       <View style={styles.filterBar}>
         {/* Search */}
-        <View style={[styles.searchWrap, { pointerEvents: 'none' }]}>
+        <View style={styles.searchWrap} pointerEvents="none">
           <MaterialIcons name="search" size={15} color={Colors.textMuted} />
           <TextInput
             style={styles.searchInput}
