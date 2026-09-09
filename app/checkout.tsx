@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  StatusBar, ActivityIndicator,
+  StatusBar, ActivityIndicator, Platform, Linking,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -135,13 +135,17 @@ export default function CheckoutScreen() {
       setLoading(false);
       setPurchaseStage('idle');
 
-      // Open Paystack checkout in system browser sheet
-      await WebBrowser.openBrowserAsync(authUrl, {
-        dismissButtonStyle: 'close',
-        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FORM_SHEET,
-      });
+      // Open Paystack checkout — use in-app browser on iOS, system browser on Android.
+      // FORM_SHEET is iOS-only and crashes on Android; Linking is the safe Android path.
+      if (Platform.OS === 'ios') {
+        await WebBrowser.openBrowserAsync(authUrl, { dismissButtonStyle: 'close' });
+      } else {
+        await Linking.openURL(authUrl);
+        // Give the system browser time to open before we try to execute the purchase
+        await new Promise((res) => setTimeout(res, 3000));
+      }
 
-      // Browser closed — give webhook a moment then execute purchase
+      // Browser closed / returned — give webhook a moment then execute purchase
       // (webhook may have already processed it server-side; purchaseNumber handles deduplication)
       if (reference) {
         setPurchaseStage('purchasing');

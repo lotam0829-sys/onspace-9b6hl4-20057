@@ -6,6 +6,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
+import { Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert } from '@/template';
 import { useWallet } from '@/hooks/useWallet';
@@ -80,19 +81,29 @@ export default function WalletScreen() {
         const result = await initializePayment(user?.email || '', amt, 'wallet_topup');
         const authUrl = result?.data?.authorization_url;
         if (!authUrl) throw new Error('No payment URL received. Please try again.');
+
+        // Close modal and clear loading BEFORE opening the browser so the UI
+        // never gets stuck if the browser call fails or is dismissed immediately.
         setTopupModal(false);
         setAmount('');
-        // Open Paystack checkout in in-app browser
-        await WebBrowser.openBrowserAsync(authUrl, {
-          dismissButtonStyle: 'close',
-          presentationStyle: WebBrowser.WebBrowserPresentationStyle.FORM_SHEET,
-        });
-        // Refresh after browser closes — webhook will have processed by then
+        setLoading(false);
+
+        if (Platform.OS === 'ios') {
+          // iOS: in-app browser sheet (smooth UX)
+          await WebBrowser.openBrowserAsync(authUrl, { dismissButtonStyle: 'close' });
+        } else {
+          // Android / Web: open in the system browser via Linking;
+          // openBrowserAsync with FORM_SHEET crashes on Android.
+          await Linking.openURL(authUrl);
+        }
+
+        // Refresh after returning — webhook will have processed by then
         setTimeout(async () => {
           await refreshProfile();
           await refreshTransactions();
         }, 2500);
         showAlert('Payment Processed', 'Your wallet will be updated shortly.');
+        return; // loading already false, skip finally
       }
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
