@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  StatusBar, ActivityIndicator, Platform, Linking,
+  StatusBar, ActivityIndicator, Modal,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as WebBrowser from 'expo-web-browser';
+import { WebView } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
 import { useAuth, useAlert } from '@/template';
 import { useOrders } from '@/hooks/useOrders';
@@ -25,19 +25,25 @@ export default function CheckoutScreen() {
 
   const params = useLocalSearchParams<{
     provider_code: string;
-    country_code: string;
+    country_code: string;  // string for Server B (e.g. "tiktok")
     country_name: string;
     project_code: string;
     project_name: string;
     price: string;
-    wholesale_price: string;
+    wholesale_price: string; // Socially.ng raw wholesale cost — used for exact Paystack split
   }>();
 
   const [loading, setLoading] = useState(false);
+  const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
+  const [paystackRef, setPaystackRef] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState<{ message: string; hint?: string } | null>(null);
   const [purchaseStage, setPurchaseStage] = useState<'idle' | 'paying' | 'purchasing'>('idle');
+  // Guard: prevent handleWebViewNav from firing executePurchase more than once per payment attempt
+  const callbackFiredRef = React.useRef(false);
 
   const price = parseFloat(params.price || '0');
+  // Wholesale cost from Socially.ng — the exact amount Socially.ng must receive.
+  // Falls back to price/MARKUP (1.4×) if not supplied (defensive).
   const wholesalePrice = params.wholesale_price
     ? parseFloat(params.wholesale_price)
     : price / 1.4;
@@ -87,6 +93,7 @@ export default function CheckoutScreen() {
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       const parsed = parsePurchaseError(e.message || 'Purchase failed. Please try again.');
+      // If the server refunded the charge, surface that clearly
       if (e.refunded) {
         const amt = e.refund_amount ?? price;
         parsed.hint = fromWallet
@@ -114,10 +121,17 @@ export default function CheckoutScreen() {
       return;
     }
 
-    // ── Paystack charge via system browser ──
+    // ── Paystack charge ──
     setPurchaseStage('paying');
     setLoading(true);
+    // Reset single-fire guard for this new payment attempt
+    callbackFiredRef.current = false;
     try {
+      // Pass purchase metadata so the webhook safety net can complete the purchase
+      // server-side if the WebView never catches the callback (bank transfer, USSD, etc.).
+      // wholesale_cost is passed so wallet-topup can apply an exact transaction_charge
+      // (flat kobo amount = retail − wholesale) instead of relying on percentage_charge,
+      // which can drift due to Math.ceil() rounding on the retail price.
       const data = await initializePayment(user?.email || '', price, 'number_purchase', {
         provider_code: params.provider_code,
         country_code: params.country_code,
@@ -126,34 +140,9 @@ export default function CheckoutScreen() {
         country_name: params.country_name,
         wholesale_cost: wholesalePrice,
       });
-
-      const authUrl = data?.data?.authorization_url;
-      const reference = data?.data?.reference;
-
-      if (!authUrl) throw new Error('No payment URL received. Please try again.');
-
-      setLoading(false);
-      setPurchaseStage('idle');
-
-      // Open Paystack checkout — use in-app browser on iOS, system browser on Android.
-      // FORM_SHEET is iOS-only and crashes on Android; Linking is the safe Android path.
-      if (Platform.OS === 'ios') {
-        await WebBrowser.openBrowserAsync(authUrl, { dismissButtonStyle: 'close' });
-      } else {
-        await Linking.openURL(authUrl);
-        // Give the system browser time to open before we try to execute the purchase
-        await new Promise((res) => setTimeout(res, 3000));
-      }
-
-      // Browser closed / returned — give webhook a moment then execute purchase
-      // (webhook may have already processed it server-side; purchaseNumber handles deduplication)
-      if (reference) {
-        setPurchaseStage('purchasing');
-        setLoading(true);
-        await new Promise((res) => setTimeout(res, 1500));
-        await executePurchase(reference, false);
-      } else {
-        setPurchaseError({ message: 'Payment reference lost. Contact support.' });
+      if (data?.data?.authorization_url) {
+        setPaystackRef(data.data.reference);
+        setWebViewUrl(data.data.authorization_url);
       }
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -164,12 +153,29 @@ export default function CheckoutScreen() {
     }
   };
 
+  const handleWebViewNav = async (url: string) => {
+    if (url.includes('numvault.app/payment/callback') || url.includes('paystack.com/close')) {
+      // Single-fire guard: only process this callback once per payment attempt
+      if (callbackFiredRef.current) {
+        console.log('checkout: WebView callback already handled, ignoring duplicate');
+        return;
+      }
+      callbackFiredRef.current = true;
+      setWebViewUrl(null);
+      if (paystackRef) {
+        setTimeout(() => executePurchase(paystackRef, false), 1500);
+      } else {
+        setPurchaseError({ message: 'Payment reference lost. Contact support.' });
+      }
+    }
+  };
+
   const payBtnLabel = walletBalance >= price
     ? `Pay \u20a6${price.toLocaleString()} from Wallet`
-    : `Pay \u20a6${price.toLocaleString()} via Paystack`;
+    : `Pay \u20a6${price.toLocaleString()}`;
 
   const stageLabel = purchaseStage === 'paying'
-    ? 'Opening Paystack...'
+    ? 'Opening payment...'
     : purchaseStage === 'purchasing'
     ? (walletBalance >= price ? 'Paying from wallet...' : 'Securing your number...')
     : null;
@@ -244,37 +250,28 @@ export default function CheckoutScreen() {
 
         {/* ── Payment methods (only shown when wallet doesn't cover the price) ── */}
         {walletBalance < price && (
-          <View style={styles.methodsCard}>
-            <Text style={styles.methodsTitle}>Pay with Paystack</Text>
-            <View style={styles.methodsList}>
-              {[
-                { icon: 'credit-card', label: 'Debit / Credit Card' },
-                { icon: 'account-balance', label: 'Bank Transfer' },
-                { icon: 'smartphone', label: 'USSD' },
-              ].map((m) => (
-                <View key={m.label} style={styles.methodRow}>
-                  <View style={styles.methodIconWrap}>
-                    <MaterialIcons name={m.icon as any} size={18} color={Colors.primary} />
-                  </View>
-                  <Text style={styles.methodLabel}>{m.label}</Text>
-                  <MaterialIcons name="check-circle" size={16} color={Colors.primary} style={{ opacity: 0.6 }} />
+        <View style={styles.methodsCard}>
+          <Text style={styles.methodsTitle}>Pay with</Text>
+          <View style={styles.methodsList}>
+            {[
+              { icon: 'credit-card', label: 'Debit / Credit Card' },
+              { icon: 'account-balance', label: 'Bank Transfer' },
+              { icon: 'smartphone', label: 'USSD' },
+            ].map((m) => (
+              <View key={m.label} style={styles.methodRow}>
+                <View style={styles.methodIconWrap}>
+                  <MaterialIcons name={m.icon as any} size={18} color={Colors.primary} />
                 </View>
-              ))}
-            </View>
-
-            {/* Processing fee notice */}
-            <View style={styles.feeNotice}>
-              <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
-              <Text style={styles.feeNoticeText}>
-                A Paystack processing fee applies and will be shown on the checkout page before you confirm payment.
-              </Text>
-            </View>
-
-            <View style={styles.secureRow}>
-              <MaterialIcons name="lock" size={12} color={Colors.textMuted} />
-              <Text style={styles.secureText}>Secured by Paystack · 256-bit TLS encryption</Text>
-            </View>
+                <Text style={styles.methodLabel}>{m.label}</Text>
+                <MaterialIcons name="check-circle" size={16} color={Colors.primary} style={{ opacity: 0.6 }} />
+              </View>
+            ))}
           </View>
+          <View style={styles.secureRow}>
+            <MaterialIcons name="lock" size={12} color={Colors.textMuted} />
+            <Text style={styles.secureText}>Secured by Paystack · 256-bit TLS encryption</Text>
+          </View>
+        </View>
         )}
 
         {/* ── Error banner ── */}
@@ -337,6 +334,27 @@ export default function CheckoutScreen() {
           )}
         </TouchableOpacity>
       </View>
+
+      {/* ── Paystack WebView ── */}
+      <Modal visible={!!webViewUrl} animationType="slide" onRequestClose={() => setWebViewUrl(null)}>
+        <View style={[styles.webViewWrap, { paddingTop: insets.top }]}>
+          <View style={styles.webViewHeader}>
+            <TouchableOpacity onPress={() => setWebViewUrl(null)} style={styles.backBtn}>
+              <MaterialIcons name="close" size={20} color={Colors.text} />
+            </TouchableOpacity>
+            <Text style={styles.webViewTitle}>Secure Payment</Text>
+            <View style={{ width: 36 }} />
+          </View>
+          {webViewUrl && (
+            <WebView
+              source={{ uri: webViewUrl }}
+              onNavigationStateChange={(s) => handleWebViewNav(s.url)}
+              startInLoadingState
+              renderLoading={() => <ActivityIndicator color={Colors.primary} style={{ flex: 1 }} />}
+            />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -413,7 +431,7 @@ const styles = StyleSheet.create({
     padding: Spacing.lg,
     gap: Spacing.md,
   },
-  methodsTitle: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.5, textTransform: 'uppercase' },
+  methodsTitle: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: FontWeight.semibold, letterSpacing: 0.5 },
   methodsList: { gap: Spacing.sm },
   methodRow: {
     flexDirection: 'row',
@@ -426,25 +444,12 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   methodLabel: { flex: 1, color: Colors.text, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
-  feeNotice: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.sm,
-    padding: Spacing.sm,
-  },
-  feeNoticeText: {
-    flex: 1,
-    color: Colors.textMuted,
-    fontSize: 11,
-    lineHeight: 16,
-  },
   secureRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    paddingTop: Spacing.sm,
+    marginTop: Spacing.sm,
+    paddingTop: Spacing.md,
     borderTopWidth: 1,
     borderTopColor: Colors.surfaceBorder,
   },
@@ -520,4 +525,17 @@ const styles = StyleSheet.create({
   payBtnText: { color: Colors.black, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   payBtnLoading: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   payBtnLoadingText: { color: Colors.black, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
+
+  // WebView
+  webViewWrap: { flex: 1, backgroundColor: Colors.background },
+  webViewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+  },
+  webViewTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.semibold },
 });
