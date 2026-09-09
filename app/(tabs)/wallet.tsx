@@ -199,7 +199,7 @@ export default function WalletScreen() {
               <Text style={styles.modalSub}>
                 {hasCard
                   ? `Charging saved card •••• ${profile?.card_last4}`
-                  : "You will be directed to Paystack checkout"}
+                  : 'You will be redirected to Paystack Checkout to complete payment. The applicable processing fee will be shown by Paystack before you confirm.'}
               </Text>
 
               {/* Quick amounts */}
